@@ -4,11 +4,11 @@ import java.util.concurrent.ThreadPoolExecutor.AbortPolicy
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent._
 import android.os._
-import just4fun.core.async.{FutureContextOwner, FutureContext}
+import just4fun.core.async.{AsyncContextOwner, AsyncContext}
 import just4fun.core.debug.DebugUtils._
 
 /* HANDLER   implementation */
-class HandlerContext(name: String, mainThread: Boolean = true)(implicit val owner: FutureContextOwner) extends FutureContext  {
+class HandlerContext(name: String, mainThread: Boolean = true)(implicit val key: AsyncContextOwner) extends AsyncContext  {
 	protected[this] var handler: Handler = null
 	private[this] val QUIT = 0x911
 	override protected[this] def start_inner(): Unit = {
@@ -73,7 +73,7 @@ object MainThreadContext extends HandlerContext("Main")(null)
 
 /* THREAD POOL user implementation */
 /** Uses global thread pool to execute runnable. */
-class ThreadPoolContext(name: String)(implicit override val owner: FutureContextOwner) extends HandlerContext(name) {
+class ThreadPoolContext(name: String)(implicit override val key: AsyncContextOwner) extends HandlerContext(name) {
 	override protected[this] def handle(runnable: Runnable): Unit = {
 		ThreadPoolContext.execute(runnable)
 	}
@@ -93,8 +93,8 @@ class ThreadPoolContext(name: String)(implicit override val owner: FutureContext
 
 /* THREAD POOL global  implementation */
 
-object ThreadPoolContext extends FutureContext {
-	override protected[this] val owner: FutureContextOwner = null
+object ThreadPoolContext extends AsyncContext {
+	override protected[this] val key: AsyncContextOwner = null
 	private[this] var executor: ThreadPoolExecutor = _
 	private[this] var handler: Handler = _
 	// Can be replaced with more specific ThreadPoolExecutor before using this object by reassigning var

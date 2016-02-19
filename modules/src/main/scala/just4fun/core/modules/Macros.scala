@@ -8,14 +8,14 @@ object Macros {
 		checkT[T](c, "Module can not be bound to itself.")
 		import c.universe._
 		implicit val cxt = c
-//		q"internal.bind[${weakTypeOf[T]}](false)($m)"
-		q"internal.bind(implicitly[Manifest[${weakTypeOf[T]}]].runtimeClass.asInstanceOf[Class[${weakTypeOf[T]}]], false)"
+//		q"internalBind[${weakTypeOf[T]}](false)($m)"
+		q"internalBind(implicitly[Manifest[${weakTypeOf[T]}]].runtimeClass.asInstanceOf[Class[${weakTypeOf[T]}]], false)"
 	}
 	def bindS[T: c.WeakTypeTag](c: Context)(m: c.Tree): c.Tree = {
 		checkT[T](c, "Module can not be bound to itself.")
 		import c.universe._
-//		q"internal.bind[${weakTypeOf[T]}](true)($m)"
-		q"internal.bind(implicitly[Manifest[${weakTypeOf[T]}]].runtimeClass.asInstanceOf[Class[${weakTypeOf[T]}]], true)"
+//		q"internalBind[${weakTypeOf[T]}](true)($m)"
+		q"internalBind(implicitly[Manifest[${weakTypeOf[T]}]].runtimeClass.asInstanceOf[Class[${weakTypeOf[T]}]], true)"
 	}
 	private def checkT[T: c.WeakTypeTag](c: Context, selfMsg: String, chkConst: Boolean = true): Unit = {
 		import c.universe._

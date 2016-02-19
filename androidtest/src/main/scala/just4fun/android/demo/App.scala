@@ -1,6 +1,5 @@
 package just4fun.android.demo
 
-import scala.Predef.Manifest
 import just4fun.android.core.app.ModuleApp
 import just4fun.core.modules.{ModuleEvent, Module}
 

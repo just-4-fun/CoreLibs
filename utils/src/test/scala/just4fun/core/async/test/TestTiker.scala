@@ -2,7 +2,7 @@ package just4fun.core.async.test
 
 import scala.language.implicitConversions
 import scala.util.Random
-import just4fun.core.async.DefaultFutureContext
+import just4fun.core.async.DefaultAsyncContext
 
 object TestTiker extends App {
 	var N = 0
@@ -12,7 +12,7 @@ object TestTiker extends App {
 		override def run(): Unit = code
 	}
 
-	val tiker = new DefaultFutureContext()(null)
+	val tiker = new DefaultAsyncContext()(null)
 	val t1 = new Thread() {
 		override def run(): Unit = {
 			tiker.execute(nextId, rnd(6000), toRunnable())

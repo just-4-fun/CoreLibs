@@ -1,8 +1,8 @@
 package just4fun.core.modules.test
 
-import just4fun.core.async.{FutureContext, FutureContextOwner}
+import just4fun.core.async.{AsyncContext, AsyncContextKey}
 
-class TestParallelFutureContext (implicit val owner: FutureContextOwner) extends FutureContext {
+class TestParallelAsyncContext (implicit val key: AsyncContextKey) extends AsyncContext {
 	override protected[this] def execute_inner(id: Any, delay: Long, r: Runnable): Unit = {
 		new Thread(() ⇒ {
 			if (delay > 0) Thread.sleep(delay)

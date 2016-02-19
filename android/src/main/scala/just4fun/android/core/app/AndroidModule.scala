@@ -1,12 +1,16 @@
 package just4fun.android.core.app
 
+import scala.collection.mutable
 import android.app.{Service, Activity}
 import android.content.{Intent, Context, BroadcastReceiver}
-import android.os.IBinder
+import android.os.{Bundle, IBinder}
+import just4fun.android.core.vars.{TempVar, AsyncVar}
 import just4fun.core.modules.{RestorableModule, ModuleSystem, Module}
 
 trait AndroidModule extends Module {
-	override protected[this] def system: ModuleApp = super.asInstanceOf[ModuleApp]
+	private[app] lazy val asyncVars = mutable.ListBuffer[AsyncVar[_]]()
+	override protected[this] def system: ModuleApp = super.system.asInstanceOf[ModuleApp]
+	private[core] def registerAsyncVar(v: AsyncVar[_]) = asyncVars += v
 }
 
 
@@ -14,13 +18,28 @@ trait AndroidModule extends Module {
 /* ACTIVITY */
 trait ActivityModule[A <: ModuleActivityBase[_]] extends AndroidModule {
 	private[this] var activity: A = null.asInstanceOf[A]
+	private[this] var tempVars = List[TempVar[_]]()
+	private[this] var counter = 0
 
 	def activityOp: Option[A] = Option(activity)
 
-	private[app] def callActivityConstructed(a: ModuleActivityBase[_]): Unit = {
+	private[app] def onActivityConstructed(a: ModuleActivityBase[_]): Unit = {
 		activity = a.asInstanceOf[A]
-		// todo callbacks
 	}
+	private[app] def onActivityCreated(): Unit ={
+		counter += 1
+	}
+	private[app] def onActivityDestroyed(): Unit ={
+		counter -= 1
+		if (counter == 0) unbindSelf()
+	}
+	private[app] def onRestoreState(inState: Bundle): Unit ={
+
+	}
+	private[app] def onSaveState(outState: Bundle): Unit ={
+
+	}
+	private[core] def registerTempVar(v: TempVar[_]): Unit = tempVars = v :: tempVars
 }
 
 
@@ -32,8 +51,7 @@ class ModuleActivity[M <: ActivityModule[_] : Manifest] extends ModuleActivityBa
 trait ModuleActivityBase[M <: ActivityModule[_]] extends Activity {
 	protected[app] def moduleClas: Class[M]
 	val module: M = ModuleApp().connectModule(moduleClas)
-	module.callActivityConstructed(this)
-
+	ModuleApp().onActivityConstructed(this)
 }
 
 

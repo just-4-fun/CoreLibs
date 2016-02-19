@@ -1,10 +1,10 @@
 package just4fun.core.modules
 
 import scala.util.Try
-import just4fun.core.async.FutureX
+import just4fun.core.async.Async
 
 
-class ModuleRequest[T] extends FutureX[T] {
+class ModuleRequest[T] extends Async[T] {
 	private[modules] var module: Module = null
 	override final protected[this] def onStartExecute(): Unit = {
 		if (module != null) module.requestStart(this)

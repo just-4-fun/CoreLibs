@@ -1,30 +1,13 @@
-package just4fun.core.modules.test.syntax
+package just4fun.test.modules.accessors.definitions.pkg1
 
-import scala.concurrent.Future
-import scala.util.Try
-import just4fun.core.async.FutureX.DummyImplicit2
-import just4fun.core.async.{FutureContextOwner, FutureX, DefaultFutureContext, FutureContext}
-import just4fun.core.modules.ModuleState.ModuleState
-import just4fun.core.modules._
+import just4fun.core.async.AsyncContext
+import just4fun.core.modules.{CompleteOption, CompleteSelector, Module}
+import just4fun.test.modules.accessors.definitions.pkg0.ModuleX
+import just4fun.test.modules.accessors.definitions.pkg2.ModuleX2
 
-class SystemX1 extends ModuleSystem {
-	override implicit val asyncContext: FutureContext = new DefaultFutureContext
-	/* callbacks */
-	override protected[this] def onSystemStart(): Unit = super.onSystemStart()
-	override protected[this] def onSystemStop(): Unit = super.onSystemStop()
-	override protected[this] def onModulePrepare(promise: ModulePreparePromise): Unit = super.onModulePrepare(promise)
-	override protected[this] def onModuleDestroy(m: Module): Unit = super.onModuleDestroy(m)
-	override protected[this] def postStateUpdate(delay: Long)(implicit m: Module): Unit = super.postStateUpdate(delay)
-	override protected[this] def cancelStateUpdate(implicit m: Module): Unit = super.cancelStateUpdate
-	override protected[this] def currentTimeMs: Long = super.currentTimeMs
-	//
-	this.isSystemStarted
-	this.isSystemStopping
-	this.hasModule
-}
-
-class ModuleX1 extends Module {
-	override implicit protected lazy val asyncContext: FutureContext = null
+class ModuleX1 extends ModuleX {
+	/* MODULE OVERRIDE */
+	override implicit lazy val asyncContext: AsyncContext = null
 
 	override protected[this] lazy val lifeCycle: LifeCycleCallbacks = new LifeCycleCallbacks {
 		restLatencyMs = 1000
@@ -48,7 +31,7 @@ class ModuleX1 extends Module {
 		override protected[this] def onRequestRemove(requestClas: Class[_]): Unit = super.onRequestRemove(requestClas)
 	}
 
-	//
+	/* PROTECTED THIS MODULE ACCESS */
 	this.isBound
 	this.isUnbound
 	this.isBoundTo _
@@ -63,10 +46,10 @@ class ModuleX1 extends Module {
 	this.cancelRequests _
 
 	this.serveAsync()
-	this.serveOpt()
-	this.serveTry()
+	this.serveSync()
+	this.serveSyncSilent()
 	this.serveRequest _
-	
+
 	this.getState
 
 	this.isAbleToServe
@@ -88,26 +71,4 @@ class ModuleX1 extends Module {
 	this.setFailed _
 	this.failure
 	this.isFailed
-
-	sys.hasModule
-	sys.isSystemStarted
-	sys.isSystemStopping
-	sys.asyncContext
-}
-
-class ModuleX2 extends Module {
-	val mod = new ModuleX1
-	mod.isAbleToServe
-	mod.isAbleToServeNow
-	mod.info.state
-	mod.info.isPreparing
-	mod.info.isOperating
-	mod.info.isActivating
-	mod.info.isDeactivating
-	mod.info.isResting
-	mod.info.isFailed
-	mod.info.isUnavailable
-	mod.info.isRestful
-	mod.info.isSuspended
-	mod.info.failure
 }

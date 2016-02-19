@@ -2,65 +2,63 @@ package just4fun.core.modules
 
 import java.util.concurrent.locks.ReentrantLock
 import scala.collection.mutable
-import just4fun.core.async.{FutureContext, FutureContextOwner}
+import just4fun.core.async.{AsyncContextKey, DefaultAsyncContext, AsyncContext, AsyncContextOwner}
 import just4fun.core.debug.DebugUtils._
 
 private[modules] object ModuleSystem {
-	val STOPPED = 0
-	val STARTED = 1
-	val STOPPING = 2
+	private[modules] val STOPPED = 0
+	private[modules] val STARTED = 1
+	private[modules] val STOPPING = 2
 
-	private[this] val lock = new ReentrantLock
-	private[this] var constructArgs: ConstructArgs[_] = null
-	private[this] var stopID: Int = 0
+	private[this] val systems = new mutable.WeakHashMap[ModuleSystem, Unit]()
+	private[modules] var initialized: Boolean = false
+	private[this] val lock = new Object
+	private[this] var currentArgs: ConstructArgs = null
 
-	def construct[M <: Module](system: ModuleSystem, clas: Class[M], client: Module = null, sync: Boolean = false, restoring: Boolean = false)(constructModule: ⇒ M): M = {
-		lock.lock()
-		constructArgs = new ConstructArgs(Thread.currentThread, system, clas, client, sync, restoring)
-		try {
-			val m = constructModule
-			if (m.isExternallyCreated) constructed(m)
-			m
-		}
-		finally if (lock.isHeldByCurrentThread) {
-			constructArgs = null
-			lock.unlock()
-		}
+	def byName(name: String): Option[ModuleSystem] = {
+		systems.collectFirst { case (s, _) if s.name == name ⇒ s }
 	}
-	def constructed(implicit m: Module): ModuleSystem = {
-		if (constructArgs == null || constructArgs.locker != Thread.currentThread || constructArgs.clas != m.getClass) return null
-		// the only way to hack is to instantiate module of same class as that which is currently constructing
-		val args = constructArgs
-		constructArgs = null
-		lock.unlock()
-		m match {
-			case _: RootModule =>
-			case _ => args.system.attach(m, args.client, args.sync, args.restoring)
-		}
-		args.system
+	private[modules] def init(s: ModuleSystem): Unit = {
+		initialized = true
+		systems.put(s, ())
 	}
 
-	def nextStopID: Int = { stopID -= 1; stopID }
+	private[modules] def construct[M <: Module](system: ModuleSystem, clas: Class[M], client: Module = null, sync: Boolean = false, restoring: Boolean = false, isRoot: Boolean = false)(constructModule: ⇒ M): M = lock.synchronized {
+		currentArgs = new ConstructArgs(Thread.currentThread, system, clas, client, sync, restoring, isRoot)
+		val m = constructModule
+		if (m.isExternal) attach(m)
+		else m.onConstructed()
+		m
+	}
+	private[modules] def attach(m: Module): Unit = {
+		if (currentArgs == null || currentArgs.locker != Thread.currentThread || currentArgs.serverClas != m.getClass) return
+		val args = currentArgs
+		currentArgs = null
+		if (!m.isInstanceOf[SystemModule]) args.system.attach(m, args)
+	}
 }
 
 
-trait ModuleSystem extends FutureContextOwner {
+trait ModuleSystem extends AsyncContextOwner {
 //private[this] val _dc = disableDebugCode()
 	import ModuleSystem.{STOPPED, STARTED, STOPPING}
-	implicit val asyncContext: FutureContext
+	val name: String
 	protected[this] implicit final val thisSystem: this.type = this
+	implicit val asyncContext: AsyncContext = new DefaultAsyncContext
 	protected[this] val restoreAgent: ModuleRestoreAgent = null
 	private[this] val modules = mutable.ListBuffer[Module]()
 	private[this] val detached = mutable.ListBuffer[Module]()
-	private[this] var root: RootModule = null
-	private[this] val lock = new ReentrantLock
+	private[this] val root: SystemModule = new SystemModule(this)
+	private[this] val lock = new Object
 	private[this] var state = STOPPED
-	private[this] var constructModules: mutable.HashMap[Thread, List[Module]] = mutable.HashMap()
+	//
+	ModuleSystem.init(this)
 
 
-	/* SYSTEM API */
+	/* system api */
 	final def isSystemStarted: Boolean = state > STOPPED
 	final def isSystemStopping: Boolean = state == STOPPING
+	final def isSystemStopped: Boolean = state == STOPPED
 	/* callbacks */
 	protected[this] def onSystemStart(): Unit = ()
 	protected[this] def onSystemStop(): Unit = ()
@@ -69,37 +67,41 @@ trait ModuleSystem extends FutureContextOwner {
 		logV(s"*************  SYSTEM START  **************")
 		onSystemStart()
 	}
-	private[this] def canStop: Boolean = {
-//		logV(s"canStop locked? ${lock.isLocked};  detached.empty? ${detached.isEmpty};  mods: ${modules.map(_.getClass.getSimpleName).mkString(", ")}")
-		modules.isEmpty && detached.isEmpty
-	}
+	private[this] def canStop: Boolean = modules.isEmpty && detached.isEmpty
 	private[this] def stopSystem(): Unit = {
-//		logV(s"SYS Stop: canStop? ${canStop}; notStopped? ${!isSystemStopped};  nonLocked& ${!lock.isLocked}")
-		if (canStop && isSystemStarted && !lock.isLocked) {
+		if (canStop && isSystemStarted) {
 			asyncContext.stop(true)
-			if (!lock.isLocked) onSystemStop()
+			onSystemStop()
 			asyncContext.stop(true)
-			root = null
 			state = STOPPED
 			logV(s"*************  SYSTEM  STOP  **************")
 		}
 	}
+	private[modules] def forceStopSystem(): Unit = if (isSystemStarted){
+		logV(s"**  SYSTEM FORCED STOP  **")
+		val err = new Exception("System is forced to stop.")
+		modules.foreach(m ⇒ m.fail(err, false))
+		modules.foreach(m ⇒ unbind(m.getClass))
+		modules.foreach { server ⇒
+			val others = modules.filterNot(_ == server)
+			others.foreach(client ⇒ unbind(server.getClass, client))
+		}
+	}
 
-	/* MODULE API */
+	/* module api */
 	final def moduleContent: Seq[Class[_]] = modules.map(_.getClass)
 
 	final def hasModule[M <: Module : Manifest]: Boolean = hasModule(moduleClass)
 	final def hasModule[M <: Module](cls: Class[M]): Boolean = find(cls).nonEmpty
 
-	final def moduleConnector[M <: Module](clas: Class[M], constructor: () ⇒ M = null): ModuleConnector[M] = {
-		new ModuleConnector[M](this, clas, constructor)
+	protected[this] final def bind[M <: Module](clas: Class[M]): M = {
+		bind(clas, root, false, false)
 	}
-
-	protected[this] final def startModule[M <: Module](clas: Class[M], stopID: Int = 0, constructor: () ⇒ M = null): M = {
-		bind(clas, rootClient, false, false, stopID, constructor)
+	protected[this] final def bind[M <: Module](clas: Class[M], constructor: () ⇒ M): M = {
+		bind(clas, root, false, false, constructor)
 	}
-	protected[this] final def stopModule[M <: Module](clas: Class[M], stopID: Int = 0): Option[M] = {
-		unbind(clas, rootClient, stopID)
+	protected[this] final def unbind[M <: Module](clas: Class[M]): Option[M] = {
+		unbind(clas, root)
 	}
 
 
@@ -112,133 +114,76 @@ trait ModuleSystem extends FutureContextOwner {
 	protected[this] def cancelStateUpdate(implicit m: Module): Unit = {
 		asyncContext.cancel(m)
 	}
-	protected[this] def currentTimeMs: Long = System.currentTimeMillis()
 
 
-	/* MODULE BIND */
-	private[modules] def bind[M <: Module](serverClas: Class[M], clientModule: Module, sync: Boolean = false, restoring: Boolean = false, stopID: Int = 0, constr: () ⇒ M = null): M = {
-//		logV(s"before LOCK bind [${Thread.currentThread().getName}] :  [${serverClas.getSimpleName}]")
-		lock.lock()
-		val holdCount = lock.getHoldCount
-//		logV(s"after LOCK bind [${Thread.currentThread().getName}] :  [${serverClas.getSimpleName}]")
-		try {
-			val client = if (clientModule == null) rootClient else clientModule
-			val isRoot = client == root
-			if (!client.isInstanceOf[RootModule] && !modules.contains(client))
-				throw new ModuleBindException(serverClas, "It's not registered in system.")
-			if (state == STOPPED || isRoot) state = STARTED
-			find(serverClas) match {
-				case Some(server) ⇒ val added = server.bindingAdd(client, sync)
-//					logV(s"before UNLOCK bind [${Thread.currentThread().getName}] :  [${serverClas.getSimpleName}]")
-					lock.unlock()
-					if (added) {
-						if (!server.isConstructed) server.synchronized(server.wait(100))
-						server.onBindingAdd(client, sync, stopID, isRoot)
-					}
-					server
-//		logV(s"Sys bind [${client.getClass.getSimpleName}] to [${m.getClass.getSimpleName}];  exists; sync? $sync; restore? $restore")
-				case None ⇒ if (modules.isEmpty) startSystem()
-					val server = try ModuleSystem.construct(this, serverClas, client, sync, restoring) {
-						val m = if (constr == null) serverClas.newInstance() else constr()
-						if (m == null) serverClas.newInstance() else m
-					}
-					catch {case e: Throwable ⇒ currentModule.fail(e, false); currentModule.asInstanceOf[M]}
-					if (server != currentModule) throw new ModuleBindException(serverClas, s"It's constructed outside the system.")
-					currentModule = null
-//		logV(s"Sys Constructed [${clas.getSimpleName}]")
-					if (server.isExternallyCreated) {
-						// WARN: setCreated and prepare can be called before instance is fully constructed
-						asyncContext.execute(null, 50, () ⇒ constructed(server, client, sync, stopID, isRoot))
-					}
-					else {
-						constructed(server, client, sync, stopID, isRoot)
-						if (stopID == 0 && isRoot && restoreAgent != null) server match {
-							case s: RestorableModule ⇒ restoreAgent.set(s, true)
-							case _ ⇒
-						}
-					}
-					server
-			}
-		}
-		finally if (holdCount >= lock.getHoldCount && lock.isHeldByCurrentThread) {
-			logV(s"!!! unexpected UNLOCK bind [${Thread.currentThread().getName}] :  [${serverClas.getSimpleName}]")
-			lock.unlock()
+	/* module bind */
+	private[modules] def bind[M <: Module](serverClas: Class[M], clientModule: Module, sync: Boolean = false, restoring: Boolean = false, constr: () ⇒ M = null): M = lock.synchronized {
+		val client = if (clientModule == null) root else clientModule
+		val isRoot = client == root
+		if (!isRoot && !modules.contains(client)) throw new ModuleBindException(serverClas, "It's not registered in system.")
+		if (state == STOPPED || isRoot) state = STARTED
+		find(serverClas) match {
+			case Some(server) ⇒ if (!server.isConstructed) server.synchronized(server.wait())
+				server.bindingAdd(client, sync, isRoot)
+				server
+			case None ⇒ if (modules.isEmpty) startSystem()
+				val server = ModuleSystem.construct(this, serverClas, client, sync, restoring, isRoot) {
+					val m = if (constr == null) serverClas.newInstance() else constr()
+					if (m == null) serverClas.newInstance() else m
+				}
+				if (isRoot && restoreAgent != null && !server.isExternal && server.isInstanceOf[RestorableModule])
+					restoreAgent.set(server, true)
+				server
 		}
 	}
-	private def attach(m: Module, client: Module, sync: Boolean, restoring: Boolean): Unit = {
+	private def attach(m: Module, args: ConstructArgs): Unit = {
 		modules += m
-		currentModule = m
-		m.bindingAdd(client, sync)
-		this match {case s: RestorableModule if restoring => s.setRestored(); case _ =>}
-//			logV(s"before UNLOCK bind [${Thread.currentThread().getName}] :  [${m.getClass.getSimpleName}]")
-		lock.unlock()
+		m.onAttached(args)
 	}
-	private[this] def constructed(m: Module, client: Module, sync: Boolean, stopID: Int, isRoot: Boolean): Unit = {
-		m.setConstructed()
+	private[modules] def constructed(m: Module, args: ConstructArgs): Unit = {
+		m.bindingAdd(args.client, args.sync, args.isRoot)
 		m.synchronized(m.notifyAll())
-		m.onBindingAdd(client, sync, stopID, isRoot)
-		if (!detached.exists(isPredecessor(_, m))) prepareModule(m)
 	}
-	private[this] def currentModule_=(m: Module): Unit = {
-		val thread = Thread.currentThread()
-		var list = constructModules.getOrElse(thread, Nil)
-		m match {
-			case null => list = list.tail
-			case _ => list = m :: list
-		}
-		if (list.isEmpty) constructModules -= thread else constructModules += thread → list
-	}
-	private[this] def currentModule: Module = {
-		val thread = Thread.currentThread()
-		constructModules.get(thread) match {
-			case None => null
-			case Some(list) => list.head
-		}
-	}
-	private[this] def prepareModule(m: Module): Unit = if (!m.isPrepared) {
-		try onModulePrepare(new ModulePreparePromise(m)) catch loggedE
+	private[modules] def prepare(m: Module): Unit = {
+		if (m.isConstructed && !m.isPrepared && !detached.exists(isPredecessor(_, m)))
+			try onModulePrepare(new ModulePreparePromise(m))
+			catch {case e: Throwable ⇒ m.fail(e, false)}
 	}
 
-	/* MODULE UNBIND */
-	private[modules] def unbind[M <: Module](serverClas: Class[M], clientModule: Module, stopID: Int = 0): Option[M] = {
-		val client = if (clientModule == null) rootClient else clientModule
+	/* module unbind */
+	private[modules] def unbind[M <: Module](serverClas: Class[M], clientModule: Module): Option[M] = {
+		val client = if (clientModule == null) root else clientModule
 		val isRoot = client == root
 		find(serverClas) match {
-			case mOp@Some(m) ⇒ if (!m.isConstructed) m.synchronized(m.wait(100))
-//				logV(s"Sys unbind [${client.getClass.getSimpleName}] from [${m.getClass.getSimpleName}];  stopID= $stopID")
-				m.bindingRemove(client, stopID, isRoot) match {
-					case true ⇒ if (isRoot && !modules.exists(_.isRootServer)) state = STOPPING; mOp
+			case mOp@Some(m) ⇒ if (!m.isConstructed) m.synchronized(m.wait())
+				m.bindingRemove(client, isRoot) match {
+					case true ⇒ if (isRoot && !modules.exists(_.isBoundToSystem)) state = STOPPING; mOp
 					case _ ⇒ None
 				}
 			case _ ⇒ None
 		}
 	}
-	private[modules] def detach(implicit module: Module): Boolean = {
-		lock.lock()
-		val fail = try module.isBound || {
-			modules -= module
-			detached += module
-			false
+	private[modules] def detach(module: Module): Boolean = lock.synchronized {
+		module.isUnbound match {
+			case true ⇒ modules -= module
+				detached += module
+				if (restoreAgent != null && module.isInstanceOf[RestorableModule]) restoreAgent.set(module, false)
+				true
+			case _ ⇒ false
 		}
-		finally lock.unlock()
-		if (!fail && restoreAgent != null) module match {
-			case s: RestorableModule ⇒ restoreAgent.set(s, false)
-			case _ ⇒
-		}
-		!fail
 	}
-	private[modules] def destroyed(implicit module: Module): Unit = {
+	private[modules] def destroyed(module: Module): Unit = if (detached.contains(module)) {
 		detached -= module
 		cancelStateUpdate(module)
 		modules.foreach { m ⇒
-			if (isPredecessor(m, module)) prepareModule(m)
-			else m.bindingRemove(module, 0, false)
+			if (isPredecessor(m, module)) prepare(m)
+			else m.bindingRemove(module, false)
 		}
 		try onModuleDestroy(module) catch loggedE
 		if (canStop) asyncContext.execute(() ⇒ stopSystem())
 	}
 
-	/* MODULE MISC */
+	/* module misc */
 	private[this] def find[M <: Module](clas: Class[M]): Option[M] = {
 		modules.find(m ⇒ m.getClass == clas).asInstanceOf[Option[M]]
 	}
@@ -248,42 +193,34 @@ trait ModuleSystem extends FutureContextOwner {
 	private[this] def moduleClass[M <: Module](implicit m: Manifest[M]): Class[M] = {
 		m.runtimeClass.asInstanceOf[Class[M]]
 	}
-	private[this] def rootClient: Module = lock synchronized {
-		if (root == null) root = ModuleSystem.construct(this, classOf[RootModule])(new RootModule)
-		root
-	}
 
-	/* EVENT API */
-	protected[this] final def sendEventToModules[T <: Module : Manifest](e: ModuleEvent[T]): Unit = {
-		modules.foreach {
+	/* event api */
+	protected[this] final def sendEventToModules[T <: Module : Manifest](e: ModuleEvent[T], modules: T*): Unit = {
+		(if (modules.isEmpty) this.modules else modules).foreach {
 			case m: T => m.callModuleEvent(e)
 			case _ =>
 		}
 	}
 
-	/* BACK DOOR */
+	/* back door */
 	private[modules] def postUpdate(delay: Long)(implicit m: Module): Unit = postStateUpdate(delay)
 	private[modules] def cancelUpdate()(implicit m: Module): Unit = cancelStateUpdate
-	private[modules] def now: Long = currentTimeMs
 }
-
-
-
-/* CONSTRUCT ARGS */
-class ConstructArgs[M <: Module](val locker: Thread, val system: ModuleSystem, val clas: Class[_], val client: Module = null, val sync: Boolean = false, val restoring: Boolean = false)
 
 
 
 
 /* ROOT MODULE */
-private[modules] class RootModule extends Module
+final class SystemModule private[modules](s: ModuleSystem) extends Module {
+	sys = s
+}
 
 
 
 
 /* MODULE PREPARE PROMISE */
 class ModulePreparePromise(val module: Module) {
-	def complete(): Unit = module.setPrepared()
+	def complete(): Unit = module.onPrepared()
 }
 
 
@@ -330,32 +267,12 @@ abstract class ModuleRestoreAgent(implicit system: ModuleSystem) {
 		}
 //		logV(s"AFTER RESTORED  ${cls.getSimpleName};  created? ${system.hasModule(cls)}")
 	}
-	protected[modules] final def set(m: RestorableModule, yep: Boolean): Unit = synchronized {
+	protected[modules] final def set(m: Module, yep: Boolean): Unit = synchronized {
 		val clas = m.getClass.getName
 		if (phase < 2) {
 			if (temp == null) temp = Set()
 			if (yep) temp += clas else temp -= clas
 		}
 		else try if (yep) add(clas) else remove(clas) catch loggedE
-	}
-}
-
-
-
-/* MODULE CONNECTOR */
-/** Usage Contract:  Eventually module should be disconnected. Module should not be used after disconnected. */
-class ModuleConnector[M <: Module](system: ModuleSystem, clas: Class[M], constr: () ⇒ M) {
-	import ModuleSystem._
-	private[this] val stopID = nextStopID
-	private[this] var _module: M = _
-
-	final def module: M = moduleConnect
-	final def moduleConnect(): M = {
-		if (_module == null) _module = system.bind(clas, null, false, false, stopID, constr)
-		_module
-	}
-	final def moduleDisconnect(): Unit = {
-		if (_module != null) system.unbind(clas, null, stopID)
-		_module = null.asInstanceOf[M]
 	}
 }

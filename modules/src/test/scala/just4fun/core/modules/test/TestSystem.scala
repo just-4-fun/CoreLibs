@@ -1,9 +1,10 @@
 package just4fun.core.modules.test
 
+import java.util.concurrent.atomic.AtomicInteger
 import scala.collection.mutable.ArrayBuffer
 import scala.language.experimental.macros
 import scala.util.{Failure, Success}
-import just4fun.core.async.{FutureContext, DefaultFutureContext, FutureX}
+import just4fun.core.async.{AsyncContext, DefaultAsyncContext, Async}
 import just4fun.core.modules._
 import just4fun.core.debug.DebugUtils._
 
@@ -31,7 +32,8 @@ case class TestConfig(var startRestful: Boolean = false, var startSuspended: Boo
 class TestSystem extends ModuleSystem {
 	import HitPoints._
 	import TestApp._
-	override implicit val asyncContext: DefaultFutureContext = new DefaultFutureContext
+	override val name: String = "TestSystem"
+	override implicit val asyncContext: DefaultAsyncContext = new DefaultAsyncContext
 	override val restoreAgent: ModuleRestoreAgent = new RestoreTestAgent
 	var restoreClasses: Iterable[String] = null
 	val app = TestApp()
@@ -39,11 +41,11 @@ class TestSystem extends ModuleSystem {
 
 	def test() = println(s" test")
 	def await() = asyncContext.await()
-	def start[M <: Module](clas: Class[M], stopID: Int = 0, constructor: () ⇒ M = null): M = {
-		startModule(clas, stopID, constructor)
+	def start[M <: Module](clas: Class[M], constructor: () ⇒ M = null): M = {
+		bind(clas, constructor)
 	}
-	def stop[M <: Module](clas: Class[M], stopID: Int = 0): Unit = {
-		stopModule(clas, stopID)
+	def stop[M <: Module](clas: Class[M]): Unit = {
+		unbind(clas)
 	}
 
 	/* callbacks */
@@ -60,7 +62,7 @@ class TestSystem extends ModuleSystem {
 		SysModPrepare.hit()(null)
 		logV(s"@ System  onModulePrepare [${promise.module.getClass.getSimpleName}]", tagCallbacks)
 		if (TestApp().systemPrepareDelay == 0) promise.complete()
-		else FutureX.post(TestApp().systemPrepareDelay, promise.module)(promise.complete())
+		else Async.post(TestApp().systemPrepareDelay, promise.module)(promise.complete())
 	}
 	override protected[this] def onModuleDestroy(m: Module): Unit = {
 		SysModDestroy.hit()(null)
@@ -79,42 +81,49 @@ abstract class TestModule(val id: Int = 0) extends Module {
 	import HitPoints._
 	import TestApp._
 	val moduleId = getClass.getSimpleName
-	lazy val app = TestApp()
-	lazy val config: TestConfig = app.setModule(this)
+	val app = TestApp()
+	val config: TestConfig = app.setModule(this)
 	import config._
 	private[this] var activatingDone = false
 	private[this] var deactivatingDone = false
-	protected[this] var count = 0
+	protected[this] val asyncCount = new AtomicInteger()
+	protected[this] val syncCount = new AtomicInteger()
 	override lazy val internal = new TestCallbacks
 	override lazy val lifeCycle = new TestLifeCycle
-	override implicit protected lazy val asyncContext: FutureContext = if (startParallel) new TestParallelFutureContext else if (sys == null) new DefaultFutureContext else sys.asyncContext
+	override implicit lazy val asyncContext: AsyncContext = if (startParallel) new TestParallelAsyncContext else if (sys == null) new DefaultAsyncContext else sys.asyncContext
 	if (startRestful) setRestful(true)
 	if (startSuspended) suspendService(true)
 	//
 	ModCreate.hit()
 
-	def startSelf() = bindSelf()
-	def stopSelf() = unbindSelf()
-	override def stateInfo(): String = super.stateInfo()
+
+	/* */
+	override protected[this] def system: TestSystem = super.system.asInstanceOf[TestSystem]
 	def setRestful_(v: Boolean) { super.setRestful(v) }
 	def suspendService_(v: Boolean) { super.suspendService(v) }
 	def recover_(): Boolean = { super.recover() }
 	def setFailed() { setFailed(new TestingException) }
-	def bind(clas: Class[_ <: TestModule], sync: Boolean): Unit = internal.bind(clas, sync)
-	def unbind(clas: Class[_ <: TestModule]): Unit = internal.unbind(clas)
-	def use(time: Int = 0): FutureX[Int] = {
-		count += 1
-		val n = count
+	def stop(): Unit = system.stop(getClass)
+	def bind(clas: Class[_ <: TestModule], sync: Boolean): Unit = internalBind(clas, sync)
+	def unbind(clas: Class[_ <: TestModule]): Unit = internalUnbind(clas)
+	def useSync(time: Int = 0): Unit = {
+		val n = syncCount.incrementAndGet()
+		val res = serveSync{ if (time != 0) Thread.sleep(time); n}
+		ModSyncReq.hit(res)
+		logV(s"[$moduleId]  $n  exec  SYNC  request $res", Module.logTagState)
+	}
+	def useAsync(time: Int = 0): Async[Int] = {
+		val n = asyncCount.incrementAndGet()
 		val fx = serveAsync {
 			ModReqExec.hit(n)
-			logV(s"[$moduleId]  $n  exec request...", Module.tagState)
+			logV(s"[$moduleId]  $n  exec request...", Module.logTagState)
 			if (time != 0) Thread.sleep(time)
 			n
 		}
 		fx.onComplete {
-			case Failure(e) ⇒ logV(s"[$moduleId] $n request failed with $e", Module.tagState)
+			case Failure(e) ⇒ logV(s"[$moduleId] $n request failed with $e", Module.logTagState)
 				ModReqComplete.hit(false)
-			case Success(n) ⇒ logV(s"[$moduleId]  $n  request ok", Module.tagState)
+			case Success(n) ⇒ logV(s"[$moduleId]  $n  request ok", Module.logTagState)
 				ModReqComplete.hit(true)
 		}
 		fx
@@ -175,7 +184,7 @@ abstract class TestModule(val id: Int = 0) extends Module {
 		override protected[this] def onActivatingStart(creating: Boolean, complete: CompleteSelector): CompleteOption = {
 			ModActStart.hit(creating)
 			logV(s"@ [$moduleId] onActivatingStart;  creating? $creating", tagCallbacks)
-			FutureX.post(activatingDelay, this) {
+			Async.post(activatingDelay, this) {
 				activatingDone = true
 				if (config.activOpt == 1) completeActivating()
 			}
@@ -197,8 +206,9 @@ abstract class TestModule(val id: Int = 0) extends Module {
 		override protected[this] def onDeactivatingStart(destroying: Boolean, complete: CompleteSelector): CompleteOption = {
 			ModDeactStart.hit(destroying)
 			logV(s"@ [$moduleId] onDeactivatingStart;  destroying? $destroying", tagCallbacks)
-			FutureX.post(deactivatingDelay, this) {
+			Async.post(deactivatingDelay, this) {
 				deactivatingDone = true
+				logV(s"@ [$moduleId]:  Post Deactivate;  delay=$deactivatingDelay", tagCallbacks)
 				if (config.deactOpt == 1) completeDeactivating()
 			}
 			config.deactOpt match {

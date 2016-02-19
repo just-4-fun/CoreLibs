@@ -4,10 +4,10 @@ import just4fun.core.debug.DebugUtils._
 
 import scala.concurrent.ExecutionContext
 
-trait FutureContext extends ExecutionContext {
+trait AsyncContext extends ExecutionContext {
 	private[this] var exited = false
 	private[this] var stopped = true
-	protected[this] val owner: FutureContextOwner
+	protected[this] val key: AsyncContextKey
 
 	protected[this] def start_inner(): Unit
 	protected[this] def execute_inner(id: Any, delay: Long, r: Runnable): Unit
@@ -17,8 +17,8 @@ trait FutureContext extends ExecutionContext {
 
 	def isExited: Boolean = synchronized(exited)
 	def isStarted: Boolean = synchronized(!stopped)
-	def hasPermission(implicit o: FutureContextOwner): Boolean = {
-		o == owner || owner == null
+	def hasPermission(implicit k: AsyncContextKey): Boolean = {
+		k == key || key == null
 	}
 	def execute(runnable: Runnable): Unit = synchronized {
 		if (start()) {
@@ -49,24 +49,24 @@ trait FutureContext extends ExecutionContext {
 		}
 		!stopped
 	}
-	def clear()(implicit o: FutureContextOwner): Boolean = synchronized {
+	def clear()(implicit k: AsyncContextKey): Boolean = synchronized {
 		!stopped && hasPermission match {
 			case true ⇒ clear_inner(); true
 			case _ ⇒ false
 		}
 	}
-	def stop(softly: Boolean = false)(implicit o: FutureContextOwner): Boolean = synchronized {
+	def stop(softly: Boolean = false)(implicit k: AsyncContextKey): Boolean = synchronized {
 		if (!stopped && hasPermission) {
 			stop_inner(softly)
 			stopped = true
 		}
 		stopped
 	}
-	def exit(softly: Boolean = false)(implicit o: FutureContextOwner): Boolean = synchronized {
+	def exit(softly: Boolean = false)(implicit k: AsyncContextKey): Boolean = synchronized {
 		if (hasPermission && stop(softly)) exited = true
 		exited
 	}
-	override def prepare(): FutureContext = {
+	override def prepare(): AsyncContext = {
 		start()
 		this
 	}
@@ -75,6 +75,9 @@ trait FutureContext extends ExecutionContext {
 
 
 
-trait FutureContextOwner {
-	implicit protected[this] final val contextOwner: FutureContextOwner = this
+trait AsyncContextOwner {
+	protected[this] implicit val asyncContextKey: AsyncContextKey = new AsyncContextKey
+	protected[this] implicit val asyncContext: AsyncContext
 }
+
+class AsyncContextKey

@@ -3,13 +3,13 @@ package just4fun.core.async
 import java.lang.System._
 import just4fun.core.debug.DebugUtils._
 
-object DefaultFutureContext {
+object DefaultAsyncContext {
 	// todo remove logs ???
 	val tag = 803842779
 }
 
-class DefaultFutureContext(implicit val owner: FutureContextOwner) extends FutureContext {
-	import DefaultFutureContext._
+class DefaultAsyncContext(implicit val key: AsyncContextKey) extends AsyncContext {
+	import DefaultAsyncContext._
 	protected[this] val list = new OrderedList[iMessage]
 	protected[this] var stopNow = false
 	protected[this] var stopSoftly = false
@@ -32,26 +32,26 @@ class DefaultFutureContext(implicit val owner: FutureContextOwner) extends Futur
 		list.clear()
 	}
 	override protected[this] def stop_inner(softly: Boolean): Unit = {
-		logV(s"$ownerName Quit soft? $softly", tag)
+		logV(s"Quit soft? $softly", tag)
 		if (softly) stopSoftly = true else stopNow = true
 		notify()
 	}
 	override protected[this] def cancel_inner(idOrRunnable: Any): Unit = {
 		list.removeAll(_.id == idOrRunnable)
-		logV(s"$ownerName Canceled  id=$idOrRunnable;   [$ids]", tag)
+		logV(s"Canceled  id=$idOrRunnable;   [$ids]", tag)
 	}
 
 	protected[this] def add(m: iMessage): Unit = synchronized {
 		val prevTime = nextTime
 		list.add(m)
-		logV(s"$ownerName Add:: delay=${m.delay};  id=${m.id};   [$ids]", tag)
+		logV(s"Add:: delay=${m.delay};  id=${m.id};   [$ids]", tag)
 		if (prevTime == 0L || nextTime < prevTime) notify()
 	}
 	protected[this] def loop(): Unit = {
 		while (hasNext) nextMessage match {
 			case null =>
-			case m => logV(s"$ownerName Execute:: id=${m.id};   [$ids]", tag)
-				try m.execute() catch {case e: Throwable => logV(s"$ownerName Exception while execute message ${m.id}: $e", tag)}
+			case m => logV(s"Execute:: id=${m.id};   [$ids]", tag)
+				try m.execute() catch {case e: Throwable => logV(s"Exception while execute message ${m.id}: $e", tag)}
 		}
 	}
 	protected[this] def hasNext: Boolean = synchronized {
@@ -76,16 +76,13 @@ class DefaultFutureContext(implicit val owner: FutureContextOwner) extends Futur
 	protected[this] def off(delay: Long): iMessage = {
 		stopSoftly match {
 			case true => stopNow = true
-			case _ => logV(s"$ownerName Wait:: $delay", tag)
-				try wait(delay) catch {case e: Throwable => logV(s"$ownerName Wait error= $e", tag)}
+			case _ => logV(s"Wait:: $delay", tag)
+				try wait(delay) catch {case e: Throwable => logV(s"Wait error= $e", tag)}
 		}
 		null
 	}
 	protected[this] def ids: String = {
 		list.toArray.map(_.id).mkString(",")
-	}
-	protected[this] def ownerName: String = {
-		if (owner == null) "[Self context]: " else s"[${owner.getClass.getSimpleName} context]: "
 	}
 }
 

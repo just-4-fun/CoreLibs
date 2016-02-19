@@ -6,7 +6,7 @@ import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 import scala.language.implicitConversions
 import scala.language.existentials
-import just4fun.core.async.{FutureX, FutureContextOwner, DefaultFutureContext}
+import just4fun.core.async.{AsyncContext, Async, AsyncContextOwner, DefaultAsyncContext}
 import just4fun.core.debug.DebugConfig
 import just4fun.core.modules.Module
 import just4fun.core.debug.DebugUtils._
@@ -20,21 +20,21 @@ object TestApp {
 
 
 /* APP */
-class TestApp[M1 <: Module1 : Manifest, M2 <: Module2 : Manifest, M3 <: Module3 : Manifest, M4 <: Module4 : Manifest, M5 <: Module5 : Manifest] extends App with FutureContextOwner {
+class TestApp[M1 <: Module1 : Manifest, M2 <: Module2 : Manifest, M3 <: Module3 : Manifest, M4 <: Module4 : Manifest, M5 <: Module5 : Manifest] extends App with AsyncContextOwner {
 	import TestApp._
 	import HitPoints._
 	DebugConfig.addPackageRoot("just4fun.core")
 	  .skipPath()
 	  .skipTag(tagCallbacks)
 //	  .skipTag(tagEvents)
-	  .skipTag(DefaultFutureContext.tag)
-	  .skipTag(Module.tagParam)
-	  .skipTag(Module.tagStateX)
+	  .skipTag(DefaultAsyncContext.tag)
+	  .skipTag(Module.logTagParam)
+	  .skipTag(Module.logTagStateX)
 //	  .skipTag(Module.tagState)
 
 	TestApp.i = this
 	implicit var system: TestSystem = newSystem
-	implicit val context = new DefaultFutureContext()
+	implicit val asyncContext: DefaultAsyncContext = new DefaultAsyncContext
 	val clas1 = implicitly[Manifest[M1]].runtimeClass.asInstanceOf[Class[M1]]
 	val clas2 = implicitly[Manifest[M2]].runtimeClass.asInstanceOf[Class[M2]]
 	val clas3 = implicitly[Manifest[M3]].runtimeClass.asInstanceOf[Class[M3]]
@@ -119,12 +119,11 @@ class TestApp[M1 <: Module1 : Manifest, M2 <: Module2 : Manifest, M3 <: Module3 
 				com match {
 					case "s" ⇒ system.start(clas1)
 					case "sx" ⇒ system.stop(clas1)
-					case "ss" ⇒ m1.startSelf()
-					case "ssx" ⇒ m1.stopSelf()
 					case "b" ⇒ m1.bind(clas2, false)
 					case "bs" ⇒ m1.bind(clas2, true)
 					case "bx" ⇒ m1.unbind(clas2)
-					case "u" ⇒ m1.use(n2)
+					case "u" ⇒ m1.useAsync(n2)
+					case "uu" ⇒ m1.useSync(n2)
 					case "r" ⇒ m1.setRestful_(true)
 					case "rx" ⇒ m1.setRestful_(false)
 					case "p" ⇒ m1.suspendService_(true)
@@ -133,7 +132,7 @@ class TestApp[M1 <: Module1 : Manifest, M2 <: Module2 : Manifest, M3 <: Module3 
 					case "fx" ⇒ if (s2.isEmpty) {if (!m1.recover_()) logV(s"Oops.. can't recover")} else cfg1.fail(n2, false)
 					case "i" ⇒ if (s2.isEmpty) cfg1.printInjects() else cfg1.switchInject(n2, true)
 					case "ix" ⇒ if (s2.isEmpty) cfg1.bits = 0 else cfg1.switchInject(n2, false)
-					case "?" ⇒ logV(m1.stateInfo())
+					case "?" ⇒ logV(m1.info.toString())
 					case "z" ⇒ logV(draftReport())
 					case "zx" ⇒ logV(draftReport(true))
 					case "L" ⇒ DebugConfig.skipTag(tagCallbacks, n2 != 1)
@@ -188,19 +187,19 @@ class TestApp[M1 <: Module1 : Manifest, M2 <: Module2 : Manifest, M3 <: Module3 
 	protected[this] def autoTest(autoTests: (() ⇒ AutoTest)*): Unit = {
 		failedReports = Nil
 		val t0 = System.currentTimeMillis
-		autoTests.foreach { fun ⇒
-			val test = fun()
+		autoTests.foreach { newTest ⇒
+			val test: AutoTest = newTest()
 			testCount += 1
 			logV(s"\n\n*************                        TEST:$testCount  [${test.name}]")
 			onCommands(test.commands, test.extraCases)
-			waitSystemFinish()
+			waitSystemFinish(test.delay)
 			logW(report(test.name, test.assertions))
 			HitPoints.reset()
 			parallel = false
 			reinit()
 		}
-		logW(s"Tests time= ${(System.currentTimeMillis - t0)/1000} sec")
-		if (failedReports.nonEmpty)logW(s"\nReports failed ${failedReports.size}:\n${failedReports.mkString("\n")}")
+		logW(s"Tests time= ${(System.currentTimeMillis - t0) / 1000} sec")
+		if (failedReports.nonEmpty) logW(s"\nReports failed ${failedReports.size}:\n${failedReports.mkString("\n")}")
 		quit = true
 		appQuit()
 	}
@@ -216,6 +215,7 @@ class TestApp[M1 <: Module1 : Manifest, M2 <: Module2 : Manifest, M3 <: Module3 
 	private[this] def waitSystemFinish(delay: Int = 30000): Unit = synchronized {
 		if (system.asyncContext.isStarted) {
 			wait(delay)
+			system.forceStopSystem()
 			logV(s"->> wake")
 		}
 	}
@@ -226,7 +226,7 @@ class TestApp[M1 <: Module1 : Manifest, M2 <: Module2 : Manifest, M3 <: Module3 
 	}
 	def appQuit(): Unit = {
 		if (!system.asyncContext.isStarted) {
-			if (quit) FutureX.post(500)(System.exit(4))
+			if (quit) Async.post(500)(System.exit(4))
 			else if (newSys) {
 				logV(draftReport())
 				system = newSystem
@@ -236,14 +236,14 @@ class TestApp[M1 <: Module1 : Manifest, M2 <: Module2 : Manifest, M3 <: Module3 
 	}
 	protected[this] def appAwait(): Unit = {
 		system.await()
-		context.await()
+		asyncContext.await()
 	}
 }
 
 
 
 /* AUTOTEST */
-abstract class AutoTest(val name: String, val commands: String) {
+abstract class AutoTest(val name: String, val commands: String, val delay: Int = 30000) {
 	def assertions: Seq[Assertion]
 	def extraCases: PartialFunction[(String, String, String), Unit] = null
 }
@@ -254,7 +254,7 @@ abstract class AutoTest(val name: String, val commands: String) {
 object HitPoints extends HitPointSet {
 	val ModCreate, ModConstr, ModPrepare, ModActStart, ModActProgress, ModActCompl,
 	ModDeactStart, ModDeactProgress, ModDeactCompl, ModFailed, ModDestroy,
-	ModBindAdd, ModBindRemove, ModReqAdd, ModReqExec, ModReqComplete, ModReqRemove, ModRestored, ModRestoreAdd, ModRestoreRemove = new HitPointVal(false)
+	ModBindAdd, ModBindRemove, ModReqAdd, ModReqExec, ModReqComplete, ModReqRemove, ModSyncReq, ModRestored, ModRestoreAdd, ModRestoreRemove = new HitPointVal(false)
 	val SysStart, SysFinish, SysModPrepare, SysModDestroy = new HitPointVal(true)
 	val points: mutable.Buffer[HitPointVal] = values.to[mutable.Buffer].map(p ⇒ p.asInstanceOf[HitPointVal])
 	val sysPoints: mutable.Buffer[HitPointVal] = points.filter(_.system)
@@ -353,15 +353,19 @@ case class Hit(pid: Int, mid: Int, param: Any) {
 	var delay = 0
 	def name = HitPoints(pid).toString
 	override def toString: String = {
-		val ignore = param match {
-			case _: Boolean | _: String | _: Int | _: Long | _: Double | _: Float | _: Short | _: Char | _: Byte => false
-			case _ => true
-		}
-		val params = if (ignore) if (mid == 0) "()" else s"($mid)" else s"($mid,$param)"
+		val p = param2string(param)
+		val params = if (p == null) {if (mid == 0) "()" else s"($mid)"} else s"($mid,$p)"
 		s"$name$params"
 	}
+	def param2string(param: Any): String = param match {
+		case null ⇒ null
+		case _: Boolean | _: String | _: Int | _: Long | _: Double | _: Float | _: Short | _: Char | _: Byte => param.toString
+		case m: Module => m.getClass.getSimpleName
+		case op: Option[_] => op.toString
+		case _ => null
+	}
 	def sameAs(h: Hit): Boolean = {
-		h.pid == pid && (h.mid == 0 || h.mid == mid) && (h.param == null || h.param == param)
+		h.pid == pid && (h.mid == 0 || h.mid == mid) && (h.param == null || param2string(h.param) == param2string(param))
 	}
 }
 
