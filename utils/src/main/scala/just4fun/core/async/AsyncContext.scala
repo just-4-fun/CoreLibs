@@ -9,6 +9,7 @@ trait AsyncContext extends ExecutionContext {
 	private[this] var stopped = true
 	protected[this] val key: AsyncContextKey
 
+//	def isExecutingThread(thread: Thread): Boolean
 	protected[this] def start_inner(): Unit
 	protected[this] def execute_inner(id: Any, delay: Long, r: Runnable): Unit
 	protected[this] def cancel_inner(idOrRunnable: Any): Unit

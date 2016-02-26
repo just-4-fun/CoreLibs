@@ -7,9 +7,9 @@ import android.content.Intent
 import android.os.{Bundle, IBinder}
 import android.util.Log
 import just4fun.android.core.LibRoot
-import just4fun.android.core.async.ThreadPoolContext
+import just4fun.android.core.async.{HandlerContext, ThreadPoolContext}
 import just4fun.android.core.vars.Prefs
-import just4fun.core.async.Async
+import just4fun.core.async.{DefaultAsyncContext, AsyncContext, Async}
 import just4fun.core.debug.DebugConfig
 import just4fun.core.debug.DebugUtils._
 import just4fun.core.modules.{Module, ModuleRestoreAgent, ModuleSystem}
@@ -22,16 +22,17 @@ private[core] object ModuleApp {
 }
 
 
-trait ModuleApp extends Application with ModuleSystem with ComponentManager with AndroidUtils with LibResources with KeepAliveManager with PermissionsSystem {
+trait ModuleApp extends Application with ModuleSystem with ActivityTracker with AndroidUtils with LibResources with KeepAliveManager with PermissionsSystem {
 	ModuleApp.i = this
-
-	override val name: String = "_android_"
-	protected[this] implicit val cache = Prefs.syscache
+	//
+	override val systemId: String = ModuleSystem.defaultIdentifier
+//	override implicit val asyncContext: AsyncContext = new HandlerContext(?)
+	protected[this] implicit lazy val cache = Prefs.syscache
 	protected[this] implicit val listType = new ListType[String]()
 	override protected[this] val restoreAgent = new AndroidModuleRestoreAgent
 	private[this] var firstRun = false
 	//
-	DebugConfig.debug(true).logDef(Log.println)
+	DebugConfig.debug(true).logDef(Log.println(_, _, _))
 
 	/* public api */
 	def isFirstRun = firstRun
@@ -47,8 +48,14 @@ trait ModuleApp extends Application with ModuleSystem with ComponentManager with
 	override final def onCreate(): Unit = {
 		super.onCreate()
 		DebugConfig.debug(isDebug)
+		DebugConfig.debug(true).skipPath()// TODO remove
 		  .addPackageRoot(classOf[LibRoot].getPackage.getName)
 		  .addPackageRoot(getPackageName)
+		  .skipTag(DefaultAsyncContext.tag)
+		  .skipTag(Module.logTagParam)
+		  .skipTag(Module.logTagStateX)
+		  .skipTag(Module.logTagState)
+		  .skipTag(Module.logTagStat)
 		logV(s"<<<<<<<<<<<<<<<<<<<<                    APP   CREATED                    >>>>>>>>>>>>>>>>>>>>")
 		checkRequiredManifestEntries()
 		checkFirstRun()
@@ -70,18 +77,13 @@ trait ModuleApp extends Application with ModuleSystem with ComponentManager with
 		logV(s"<<<<<<<<<<<<<<<<<<<<                    APP   STOP                    >>>>>>>>>>>>>>>>>>>>")
 	}
 
-	private[app] def connectModule[M <: Module](moduleClas: Class[M]): M = {
-		bind(moduleClas)
-	}
-	private[app] def disconnectModule[M <: Module](moduleClas: Class[M]): Unit = {
-		unbind(moduleClas)
-	}
-
 	//	todo override def onTrimMemory(level: Int): Unit = Modules.onTrimMemory(level)
 //	todo override def onConfigurationChanged(newConfig: Configuration): Unit = Modules.mManager.onConfigurationChanged(newConfig)
 
 
 	/* misc internal api */
+	private[app] def internalBindModule[M <: Module](clas: Class[M]): M = internal.bind(clas)
+	private[app] def internalBindModule[M <: Module](clas: Class[M], constructor: () ⇒ M): M = internal.bind(clas, constructor)
 
 	private[this] def isDebug: Boolean = {
 		try {
@@ -123,7 +125,7 @@ object UiEvent extends Enumeration {
 }
 
 
-trait ComponentManager extends ActivityLifecycleCallbacks {
+trait ActivityTracker extends ActivityLifecycleCallbacks {
 	self: ModuleApp ⇒
 	import ActivityState._
 	private[this] var activity: Activity = _
@@ -138,7 +140,7 @@ trait ComponentManager extends ActivityLifecycleCallbacks {
 	def uiVisible = state == RESUMED
 	def uiAlive = state >= CREATED && state < DESTROYED && !activity.isFinishing && (!reconfiguring || state < PAUSED)
 
-	private[app] def onActivityConstructed(a: Activity) = {
+	private[app] def onActivityConstructed(a: Activity): Unit = {
 //		if (activity == null) uiEvent = UiEvent.CREATE
 		activity = a
 		fireConstruct(a)
@@ -197,38 +199,38 @@ trait ComponentManager extends ActivityLifecycleCallbacks {
 		val isCurrent = activity == null || activity == a
 		if (isCurrent) state = newStt
 		fireUiEvent()
-		fireActivityEvent(ActivityEvent(a.hashCode, newStt, isCurrent, reconfiguring, a.isFinishing))
+		fireActivityEvent(ActivityEvent(a.hashCode, newStt, isCurrent, reconfiguring, a.isFinishing, uiEvent))
 		uiEvent = UiEvent.NONE
 	}
 	private def reason(a: Activity): String = if (uiEvent != UiEvent.NONE) uiEvent.toString else if (a.isFinishing) "finishing" else if (reconfiguring) "reconfiguring" else "replacing"
 
 	private[this] def fireConstruct(a: Activity): Unit = {
 		a match {
-		  case a: ModuleActivityBase[_] => a.module.onActivityConstructed(a)
+		  case a: ModuleActivityBase[_] => a.module.callActivityConstructed(a)
 		  case _ =>
 		}
 	}
 	private[this] def fireCreate(a: Activity): Unit = {
 		a match {
-		  case a: ModuleActivityBase[_] => a.module.onActivityCreated()
+		  case a: ModuleActivityBase[_] => a.module.callActivityCreated()
 		  case _ =>
 		}
 	}
 	private[this] def fireRestore(a: Activity, inState: Bundle): Unit = {
 		a match {
-			case a: ModuleActivityBase[_] => a.module.onRestoreState(inState)
+			case a: ModuleActivityBase[_] => a.module.callRestoreState(inState)
 			case _ =>
 		}
 	}
 	private[this] def fireSave(a: Activity, outState: Bundle): Unit = {
 		a match {
-			case a: ModuleActivityBase[_] => a.module.onSaveState(outState)
+			case a: ModuleActivityBase[_] => a.module.callSaveState(outState)
 			case _ =>
 		}
 	}
 	private[this] def fireDestroy(a: Activity): Unit = {
 		a match {
-			case a: ModuleActivityBase[_] => a.module.onActivityDestroyed()
+			case a: ModuleActivityBase[_] => a.module.callActivityDestroyed()
 			case _ =>
 		}
 	}
@@ -239,12 +241,12 @@ trait ComponentManager extends ActivityLifecycleCallbacks {
 	private[this] def fireUiEvent(): Unit = if (uiEvent != UiEvent.NONE) {
 		// todo fire event
 	}
+}
 
 
-	/* EVENT */
-	case class ActivityEvent(hash: Int, state: ActivityState.Value, current: Boolean, reconfiguring: Boolean, finishing: Boolean) {
-		override def toString: String = s"Current= $current;  reason= ${if (uiEvent != UiEvent.NONE) uiEvent.toString else if (finishing) "finishing" else if (reconfiguring) "reconfiguring" else "replacing"};  state= $state"
-	}
+/* EVENT */
+case class ActivityEvent(hash: Int, state: ActivityState.Value, current: Boolean, reconfiguring: Boolean, finishing: Boolean, uiEvent: UiEvent.Value) {
+	override def toString: String = s"Current= $current;  reason= ${if (uiEvent != UiEvent.NONE) uiEvent.toString else if (finishing) "finishing" else if (reconfiguring) "reconfiguring" else "replacing"};  state= $state"
 }
 
 
@@ -334,7 +336,7 @@ trait KeepAliveManager {
 			Async.post(10000, "SPAM") {spam()} (ThreadPoolContext)
 		}
 
-		// todo ???
+		// todo how tochange dynamically
 		android.app.Service.START_REDELIVER_INTENT
 	}
 }

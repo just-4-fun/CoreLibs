@@ -18,7 +18,7 @@ private[debug] object DebugMacros {
 		import c.universe._
 		val tree = DISABLE_DEBUG match {
 			case false => q"$code"
-			case _ => q"null.asInstanceOf[${symbolOf[T]}]"
+			case _ => q"null.asInstanceOf[${symbolOf[T]}]"// TODO WARN: null.asInstanceOf[Nothing] throws NPE
 		}
 //		implicit val _c = c
 //		prn(s"DISABLE_DEBUG= $DISABLE_DEBUG")

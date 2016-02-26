@@ -84,6 +84,7 @@ class DefaultAsyncContext(implicit val key: AsyncContextKey) extends AsyncContex
 	protected[this] def ids: String = {
 		list.toArray.map(_.id).mkString(",")
 	}
+	def isExecutingThread(thread: Thread): Boolean = thread == this.thread
 }
 
 

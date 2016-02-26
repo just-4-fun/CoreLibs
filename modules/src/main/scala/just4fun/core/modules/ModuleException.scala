@@ -5,12 +5,12 @@ abstract class ModuleException extends Exception
 
 
 class ModuleServiceException(msg: String = null)(implicit  module: Module) extends ModuleException {
-	override def getMessage: String = s"Module is not able to serve ${if (msg != null) msg else if (module.isSuspended) ": it is suspended" else if (module.isDetached) ": it is detached" else  s"in ${module.getState} state"}."
+	override def getMessage: String = s"Module is not able to serve ${if (msg != null) msg else if (module.status.suspended) ": it is suspended" else if (module.status.detached) ": it is detached" else  s"in ${module.getPhase} state"}."
 }
 
 
-class ModuleCreateException(val moduleClas: Class[_], reason: String = null) extends ModuleException {
-	override def getMessage: String = s"Module  ${moduleClas.getName} can not be created. ${if (reason != null) reason else ""}"
+class ModuleCreateException(val moduleClas: Class[_]) extends ModuleException {
+	override def getMessage: String = s"Module ${moduleClas.getName} is created outside the ModuleSystem."
 }
 
 

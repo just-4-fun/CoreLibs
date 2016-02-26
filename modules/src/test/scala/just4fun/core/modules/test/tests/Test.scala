@@ -4,6 +4,7 @@ import scala.collection.mutable
 import scala.language.postfixOps
 import scala.util.{Success, Failure}
 import just4fun.core.async.{AsyncContext, Async}
+import just4fun.core.debug.measureTime
 import just4fun.core.modules._
 import just4fun.core.modules.test._
 import just4fun.core.debug.DebugUtils._
@@ -11,21 +12,19 @@ import just4fun.core.debug.DebugUtils._
 object Test extends TestApp[M1, M2, M3, M4, M5] {
 	import HitPoints._
 
-		val auto = false
+	val auto = false
 //	val auto = true
 
 	if (auto) {
-		autoTest(t40)
-//		autoTest(t1, t2, t3, t4, t5, t6, t7, t8, t9, t10, t11, t12, t13, t14, t15, t16, t17, t18, t19, t20, t21, t22, t23, t24, t25, /*t26, t27,*/ t28, t29, t30, t31, t32, t33, t34, t35, t36, t37, t38, t39, t40, t41, t42, t43, t44, t45, t46, t47)
-		// 220 sec
+		autoTest(t27, t26)
+//		autoTest(t1, t2, t3, t4, t5, t6, t7, t8, t9, t10, t11, t12, t13, t14, t15, t16, t17, t18, t19, t20, t21, t22, t23, t24, t25, t26, t27, t28, t29, t30, t31, t32, t33, t34, t35, t36, t37, t38, t39, t40, t41, t42, t43, t44, t45, t46, t47)
+		// 185 sec
 	}
 	else manualTest {
 //		cfg1.setInject(ModCreate, true, p ⇒ m1.internal.internalBind(classOf[M2], true))
 	} {
-		case (s1, "ns", s2) ⇒ val s = new TestSystem; s.start(classOf[M1], () ⇒ new M1); s.stop(classOf[M1])
-		case (s1, "ne", s2) ⇒ val m = new EM1(12); try new EM1(13) catch loggedE; m.useAsync(); m.stop()
-		case (s1, "nee", s2) ⇒ val m = new EM2(12); try new EM2(13) catch loggedE; m.useAsync(); m.stop()
-		case (s1, "nex", s2) ⇒ val m = new M1; m.useAsync().onComplete { res ⇒ logV(s"[M1] use complete $res") }
+		case (s1, "ns", s2) ⇒ val s = new TestSystem; s.bindModule(classOf[M1], () ⇒ new M1); s.unbindModule(classOf[M1])
+		case (s1, "ne", s2) ⇒ val m = try new M1 catch loggedE
 		case (s1, com, s2) ⇒ println(s"Command not found: '${s1 + com + s2}'")
 	}
 
@@ -81,7 +80,7 @@ object Test extends TestApp[M1, M2, M3, M4, M5] {
 	}
 	lazy val t38 = new AutoTest("Restore", "rs15 2s ///100 1sx 2sx") {
 		override def assertions: Seq[Assertion] = Seq(
-			ModCreate(1) >>>> ModRestoreAdd(1) >> ModRestored(1) >>>> ModActCompl(1, true) >>>> ModRestoreRemove(1) >> ModDeactStart(1, true) >? "1",
+			ModCreate(1) >>>> ModRestoreAdd(1) >>>> ModRestored(1) >>>> ModActCompl(1, true) >>>> ModRestoreRemove(1) >> ModDeactStart(1, true) >? "1",
 			ModCreate(2) >>>> ModRestoreAdd(2) >>>> ModActCompl(2, true) >>>> ModRestoreRemove(2) >> ModDeactStart(2, true) >? "2",
 			ModCreate(5) >!? "5"
 		)
@@ -119,7 +118,7 @@ object Test extends TestApp[M1, M2, M3, M4, M5] {
 	lazy val t32 = new AutoTest("Fail SyncServer in Constructor - Try Recover SyncServer - Failed", "2f0 1s 2fx 1sx") {
 		cfg1.setInject(ModCreate, true, p ⇒ m1.bind(classOf[M2], true))
 		override def assertions: Seq[Assertion] = Seq(
-			ModFailed(2) >>>> ModFailed(1) >?"1", ModActCompl(1, true)>!?"2", ModActCompl(2, true)>!?"3"
+			ModFailed(2) >>>> ModFailed(1) >? "1", ModActCompl(1, true) >!? "2", ModActCompl(2, true) >!? "3"
 		)
 	}
 	lazy val t31 = new AutoTest("Fail SyncServer - Recover SyncServer", "2f3 1s 1bs2 ///1000 2fx3 2fx 1u 1sx") {
@@ -142,16 +141,19 @@ object Test extends TestApp[M1, M2, M3, M4, M5] {
 			ModActCompl(2, true) >> ModActStart(1, true) >>>> ModReqExec(1, 1) >>>> ModDestroy(1) >> ModBindRemove(2) >>>> ModDeactStart(2, true) >?
 		)
 	}
-//	lazy val t27 = new AutoTest("", "") {
-//		override def assertions: Seq[Assertion] = Seq(
-//			>?
-//		)
-//	}
-//	lazy val t26 = new AutoTest("", "") {
-//		override def assertions: Seq[Assertion] = Seq(
-//			 >?
-//		)
-//	}
+	lazy val t27 = new AutoTest("Zero delays, Start - Use - Stop", "#pd0 #ad0 #dd0 #rl0 #dl #ao0 #do0 1s 1u 1sx") {
+		override def assertions: Seq[Assertion] = Seq(
+			SysStart()>>ModCreate(1)>>ModConstr(1)>>ModBindAdd(1)>>SysModPrepare()>>ModPrepare(1)>>ModActStart(1,true) >> ModActCompl(1,true)>>>>ModReqExec(1,1)>>>>ModDeactStart(1,true) >> ModDeactCompl(1,true)>>ModDestroy(1)>>SysModDestroy()>>SysFinish()>?"1",
+			ModReqComplete(1,true)>?"2",
+			Assertion(time < 200, "Test time < 200 ms", s"time= $time")
+		)
+	}
+	lazy val t26 = new AutoTest("Zero delays, Start - Stop", "#pd0 #ad0 #dd0 #rl0 #dl #ao0 #do0 1s 1sx") {
+		override def assertions: Seq[Assertion] = Seq(
+			SysStart() >> ModCreate(1) >> ModConstr(1) >> ModBindAdd(1) >> SysModPrepare() >> ModPrepare(1) >> ModActStart(1, true) >> ModActCompl(1, true) >> ModBindRemove(1) >> ModDeactStart(1, true) >> ModDeactCompl(1, true) >> ModDestroy(1) >> SysModDestroy() >> SysFinish() >?,
+			Assertion(time < 200, "Test time < 200 ms", s"time= $time")
+		)
+	}
 	lazy val t25 = new AutoTest("Parallel Use in ParallelContext", "1#sp1 1s 1sx /= 1u 1u 1u 1u 1u") {
 		override def assertions: Seq[Assertion] = Seq(
 			ModActCompl(1, true) >>>> ModReqRemove(1) >>>> ModReqRemove(1) >>>> ModReqRemove(1) >>>> ModReqRemove(1) >>>> ModReqRemove(1) >>>> ModDeactStart(1, true) >?
@@ -199,17 +201,17 @@ object Test extends TestApp[M1, M2, M3, M4, M5] {
 	}
 	lazy val t16 = new AutoTest("Fail in ModConstr - Recover", "1f1 1s 1fx 1sx") {
 		override def assertions: Seq[Assertion] = Seq(
-			ModCreate(1)>>ModConstr(1)>>ModFailed(1)>>>>ModDestroy(1) >?
+			ModCreate(1) >> ModConstr(1) >> ModFailed(1) >>>> ModDestroy(1) >?
 		)
 	}
 	lazy val t15 = new AutoTest("Fail in ModCreate - Recover", "1f0 1s 1fx 1sx") {
 		override def assertions: Seq[Assertion] = Seq(
-			ModCreate(1)>>ModConstr(1)>>ModFailed(1)>>>>ModDestroy(1) >?
+			ModCreate(1) >> ModConstr(1) >> ModFailed(1) >>>> ModDestroy(1) >?
 		)
 	}
 	lazy val t14 = new AutoTest("No delays - Start Restful - Use - Suspend -Use - Release - Stop", "1#dd0 1#ad0 1#rl0 1#dl0 1#sr1 1s 1u 1p 1u 1px 1sx") {
 		override def assertions: Seq[Assertion] = Seq(
-			ModReqAdd(1) >>>> ModActCompl(1, true) >>>> ModDeactCompl(1, false)  >>>> ModActCompl(1, false) >> ModReqExec(1, 1) >>>> ModReqExec(1, 2) >>>> ModDeactCompl(1, true) >? "1",
+			ModReqAdd(1) >>>> ModActCompl(1, true) >>>> ModDeactCompl(1, false) >>>> ModActCompl(1, false) >> ModReqExec(1, 1) >>>> ModReqExec(1, 2) >>>> ModDeactCompl(1, true) >? "1",
 			ModReqComplete(1, true) >> ModReqComplete(1, true) >? "2"
 		)
 	}
@@ -278,8 +280,8 @@ object Test extends TestApp[M1, M2, M3, M4, M5] {
 	}
 	lazy val t1 = new AutoTest("Start - Stop", "1s 1sx") {
 		override def assertions: Seq[Assertion] = Seq(
-			SysStart() >> ModCreate(1) >> ModConstr(1) >> ModBindAdd(1) >> SysModPrepare() >> ModPrepare(1) >> ModActStart(1, true) >@ 1000 >>>> ModActProgress(1, true) >> ModActCompl(1, true) >@ 1000 >> ModDeactStart(1, true) >@ 1000 >>>> ModDeactProgress(1, true) >> ModDeactCompl(1, true) >> ModDestroy(1) >> SysModDestroy() >> SysFinish() >?"1",
-			ModBindAdd(1) >>>> ModBindRemove(1) >>>> ModDeactStart(1, true) >?"2"
+			SysStart() >> ModCreate(1) >> ModConstr(1) >> ModBindAdd(1) >> SysModPrepare() >> ModPrepare(1) >> ModActStart(1, true) >@ 1000 >>>> ModActProgress(1, true) >> ModActCompl(1, true) >@ 1000 >> ModDeactStart(1, true) >@ 1000 >>>> ModDeactProgress(1, true) >> ModDeactCompl(1, true) >> ModDestroy(1) >> SysModDestroy() >> SysFinish() >? "1",
+			ModBindAdd(1) >>>> ModBindRemove(1) >>>> ModDeactStart(1, true) >? "2"
 		)
 	}
 }
@@ -289,13 +291,3 @@ class M2 extends Module2
 class M3 extends Module3
 class M4 extends Module4
 class M5 extends Module5
-
-trait TestExternalModule extends TestModule {
-	override def system: TestSystem = Test.system
-}
-class EM1(override val id: Int) extends TestExternalModule
-class EM2(override val id: Int) extends TestExternalModule {
-	Thread.sleep(5000)
-	useAsync()
-	bind[M1]
-}

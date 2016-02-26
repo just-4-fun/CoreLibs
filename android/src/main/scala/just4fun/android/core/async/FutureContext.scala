@@ -4,11 +4,12 @@ import java.util.concurrent.ThreadPoolExecutor.AbortPolicy
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent._
 import android.os._
-import just4fun.core.async.{AsyncContextOwner, AsyncContext}
+import just4fun.android.core.app.ModuleApp
+import just4fun.core.async.{AsyncContextKey, AsyncContextOwner, AsyncContext}
 import just4fun.core.debug.DebugUtils._
 
 /* HANDLER   implementation */
-class HandlerContext(name: String, mainThread: Boolean = true)(implicit val key: AsyncContextOwner) extends AsyncContext  {
+class HandlerContext(name: String, mainThread: Boolean = true)(implicit val key: AsyncContextKey) extends AsyncContext  {
 	protected[this] var handler: Handler = null
 	private[this] val QUIT = 0x911
 	override protected[this] def start_inner(): Unit = {
@@ -44,6 +45,9 @@ class HandlerContext(name: String, mainThread: Boolean = true)(implicit val key:
 	}
 	protected[this] def handle(r: Runnable): Unit = r.run()
 	def isMainThread = mainThread
+	def isExecutingThread(thread: Thread): Boolean = {
+		if (handler == null) false else thread == handler.getLooper.getThread
+	}
 }
 
 
@@ -58,14 +62,14 @@ object MainThreadContext extends HandlerContext("Main")(null)
 /* UI Thread implementation */
 //TODO
 /** Executes only if UI is available. Re-posts runnable if UI is reconfiguring */
-//object UiThreadContext extends HandlerContext("Ui")(null) {
-//	override def handle(runnable: Runnable): Unit = Modules.uiContext match {
-//		case Some(a) =>
-//			if (a.isChangingConfigurations) handler.post(runnable)
-//			else super.handle(runnable)
-//		case None =>
-//	}
-//}
+object UiThreadContext extends HandlerContext("Ui")(null) {
+	override def handle(runnable: Runnable): Unit = ModuleApp().uiContext match {
+		case Some(a) =>
+			if (a.isChangingConfigurations) handler.post(runnable)
+			else super.handle(runnable)
+		case None =>
+	}
+}
 
 
 
@@ -73,7 +77,7 @@ object MainThreadContext extends HandlerContext("Main")(null)
 
 /* THREAD POOL user implementation */
 /** Uses global thread pool to execute runnable. */
-class ThreadPoolContext(name: String)(implicit override val key: AsyncContextOwner) extends HandlerContext(name) {
+class ThreadPoolContext(name: String)(implicit override val key: AsyncContextKey) extends HandlerContext(name) {
 	override protected[this] def handle(runnable: Runnable): Unit = {
 		ThreadPoolContext.execute(runnable)
 	}
@@ -94,7 +98,7 @@ class ThreadPoolContext(name: String)(implicit override val key: AsyncContextOwn
 /* THREAD POOL global  implementation */
 
 object ThreadPoolContext extends AsyncContext {
-	override protected[this] val key: AsyncContextOwner = null
+	override protected[this] val key: AsyncContextKey = null
 	private[this] var executor: ThreadPoolExecutor = _
 	private[this] var handler: Handler = _
 	// Can be replaced with more specific ThreadPoolExecutor before using this object by reassigning var

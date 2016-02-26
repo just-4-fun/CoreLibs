@@ -4,11 +4,13 @@ import just4fun.core.debug.DebugUtils._
 
 object measureTime {
 	//	import just4fun.utils.devel.ILogger._
-	def apply[T](tag: String, times: Int = 1)(code: => T): T = {
+	def apply[T](tag: String, times: Int = 1, warmUp: Boolean = true)(code: => T): T = {
 		var result: T = null.asInstanceOf[T]
 		var ns = 0L
-		code
-		code
+		if (warmUp) {
+			code
+			code
+		}
 		if (times == 1) {
 			val t0 = System.nanoTime()
 			result = code

@@ -35,7 +35,7 @@ object PrefVar {
 	/** WARN: sync refactoring with macros */
 	def apply[T: Manifest](name: String, value: => Any)(implicit context: AndroidModule, typ: PropType[T]): PrefVar[T] = {
 		val v = new PrefVar[T](name + " " + context.getClass.getName)
-		if (value != None && (/* todo !context.restorableAfterAbort || */ !context.info.isRestored)) v.update(value.asInstanceOf[T])
+		if (value != None && (!context.status.restored)) v.update(value.asInstanceOf[T])
 		v
 	}
 }

@@ -12,6 +12,7 @@ import just4fun.core.modules.Module
 import just4fun.core.debug.DebugUtils._
 
 object TestApp {
+	val sysId = "TestSystem"
 	val tagCallbacks = 299332
 	val tagEvents = 299338
 	private var i: TestApp[_, _, _, _, _] = _
@@ -30,7 +31,8 @@ class TestApp[M1 <: Module1 : Manifest, M2 <: Module2 : Manifest, M3 <: Module3 
 	  .skipTag(DefaultAsyncContext.tag)
 	  .skipTag(Module.logTagParam)
 	  .skipTag(Module.logTagStateX)
-//	  .skipTag(Module.tagState)
+//	  .skipTag(Module.logTagState)
+//	  .skipTag(Module.logTagStats)
 
 	TestApp.i = this
 	implicit var system: TestSystem = newSystem
@@ -117,8 +119,8 @@ class TestApp[M1 <: Module1 : Manifest, M2 <: Module2 : Manifest, M3 <: Module3 
 				val (m1, cfg1, clas1) = getModule(if (n1 == 0) 1 else n1)
 				val (m2, cfg2, clas2) = getModule(n2)
 				com match {
-					case "s" ⇒ system.start(clas1)
-					case "sx" ⇒ system.stop(clas1)
+					case "s" ⇒ system.bindModule(clas1)
+					case "sx" ⇒ system.unbindModule(clas1)
 					case "b" ⇒ m1.bind(clas2, false)
 					case "bs" ⇒ m1.bind(clas2, true)
 					case "bx" ⇒ m1.unbind(clas2)
@@ -132,7 +134,7 @@ class TestApp[M1 <: Module1 : Manifest, M2 <: Module2 : Manifest, M3 <: Module3 
 					case "fx" ⇒ if (s2.isEmpty) {if (!m1.recover_()) logV(s"Oops.. can't recover")} else cfg1.fail(n2, false)
 					case "i" ⇒ if (s2.isEmpty) cfg1.printInjects() else cfg1.switchInject(n2, true)
 					case "ix" ⇒ if (s2.isEmpty) cfg1.bits = 0 else cfg1.switchInject(n2, false)
-					case "?" ⇒ logV(m1.info.toString())
+					case "?" ⇒ logV(m1.status.toString())
 					case "z" ⇒ logV(draftReport())
 					case "zx" ⇒ logV(draftReport(true))
 					case "L" ⇒ DebugConfig.skipTag(tagCallbacks, n2 != 1)
@@ -193,6 +195,7 @@ class TestApp[M1 <: Module1 : Manifest, M2 <: Module2 : Manifest, M3 <: Module3 
 			logV(s"\n\n*************                        TEST:$testCount  [${test.name}]")
 			onCommands(test.commands, test.extraCases)
 			waitSystemFinish(test.delay)
+			test.time = System.currentTimeMillis() - sequence.head.time
 			logW(report(test.name, test.assertions))
 			HitPoints.reset()
 			parallel = false
@@ -213,19 +216,24 @@ class TestApp[M1 <: Module1 : Manifest, M2 <: Module2 : Manifest, M3 <: Module3 
 
 	/* APP */
 	private[this] def waitSystemFinish(delay: Int = 30000): Unit = synchronized {
-		if (system.asyncContext.isStarted) {
+		if (system.isSystemStarted) {
+			val t0 = System.currentTimeMillis
 			wait(delay)
 			system.forceStopSystem()
-			logV(s"->> wake")
+			logV(s"->> waited system finish [${System.currentTimeMillis - t0} of $delay];")
 		}
 	}
-	def onSystemFinish(): Unit = synchronized {
-		notifyAll()
-		if (manual) manualTestFinish()
-		appQuit()
+	def onSystemFinish(): Unit = {
+		asyncContext.execute {() ⇒
+			synchronized {
+				notifyAll()
+				if (manual) manualTestFinish()
+				appQuit()
+			}
+		}
 	}
 	def appQuit(): Unit = {
-		if (!system.asyncContext.isStarted) {
+		if (system.isSystemStopped) {
 			if (quit) Async.post(500)(System.exit(4))
 			else if (newSys) {
 				logV(draftReport())
@@ -244,6 +252,7 @@ class TestApp[M1 <: Module1 : Manifest, M2 <: Module2 : Manifest, M3 <: Module3 
 
 /* AUTOTEST */
 abstract class AutoTest(val name: String, val commands: String, val delay: Int = 30000) {
+	var time = 0L
 	def assertions: Seq[Assertion]
 	def extraCases: PartialFunction[(String, String, String), Unit] = null
 }

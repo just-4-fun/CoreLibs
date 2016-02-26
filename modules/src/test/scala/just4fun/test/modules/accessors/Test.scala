@@ -16,20 +16,9 @@ object Test {
 	/* PUBLIC MODULE ACCESS */
 	val mod = new ModuleX1
 	mod.asyncContext
+	mod.status
+	mod.system
 	mod.isAbleToServe
 	mod.isAbleToServeNow
-	mod.delayedInit()
-	mod.info.state
-	mod.info.isPreparing
-	mod.info.isOperating
-	mod.info.isActivating
-	mod.info.isDeactivating
-	mod.info.isResting
-	mod.info.isFailed
-	mod.info.isUnavailable
-	mod.info.isRestful
-	mod.info.isSuspended
-	mod.info.isRestored
-	mod.info.failure
 }
 

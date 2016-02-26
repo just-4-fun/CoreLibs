@@ -7,22 +7,20 @@ import just4fun.test.modules.accessors.definitions.pkg2.ModuleX2
 
 class SystemX1 extends ModuleSystem {
 	/* SYSTEM OVERRIDE */
-	override val name: String = "X1"
+	override val systemId: String = "X1"
 	override implicit val asyncContext: AsyncContext = new DefaultAsyncContext
 	/* callbacks */
 	override protected[this] def onSystemStart(): Unit = super.onSystemStart()
 	override protected[this] def onSystemStop(): Unit = super.onSystemStop()
 	override protected[this] def onModulePrepare(promise: ModulePreparePromise): Unit = super.onModulePrepare(promise)
 	override protected[this] def onModuleDestroy(m: Module): Unit = super.onModuleDestroy(m)
-	override protected[this] def postStateUpdate(delay: Long)(implicit m: Module): Unit = super.postStateUpdate(delay)
-	override protected[this] def cancelStateUpdate(implicit m: Module): Unit = super.cancelStateUpdate
+
 	/* PROTECTED SYSTEM ACCESS */
 	this.isSystemStarted
 	this.isSystemStopping
 	this.hasModule
 	this.moduleContent
-	this.bind(null)
-	this.unbind(null)
+	this.internal.bind(null)
 	this.sendEventToModules(null)
 }
 
