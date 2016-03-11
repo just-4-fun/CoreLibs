@@ -5,7 +5,7 @@ import just4fun.core.debug.DebugUtils._
 
 object DefaultAsyncContext {
 	// todo remove logs ???
-	val tag = 803842779
+	val logTag = 803842779
 }
 
 class DefaultAsyncContext(implicit val key: AsyncContextKey) extends AsyncContext {
@@ -32,26 +32,26 @@ class DefaultAsyncContext(implicit val key: AsyncContextKey) extends AsyncContex
 		list.clear()
 	}
 	override protected[this] def stop_inner(softly: Boolean): Unit = {
-		logV(s"Quit soft? $softly", tag)
+		logV(s"Quit soft? $softly", logTag)
 		if (softly) stopSoftly = true else stopNow = true
 		notify()
 	}
 	override protected[this] def cancel_inner(idOrRunnable: Any): Unit = {
 		list.removeAll(_.id == idOrRunnable)
-		logV(s"Canceled  id=$idOrRunnable;   [$ids]", tag)
+		logV(s"Canceled  id=$idOrRunnable;   [$ids]", logTag)
 	}
 
 	protected[this] def add(m: iMessage): Unit = synchronized {
 		val prevTime = nextTime
 		list.add(m)
-		logV(s"Add:: delay=${m.delay};  id=${m.id};   [$ids]", tag)
+		logV(s"Add:: delay=${m.delay};  id=${m.id};   [$ids]", logTag)
 		if (prevTime == 0L || nextTime < prevTime) notify()
 	}
 	protected[this] def loop(): Unit = {
 		while (hasNext) nextMessage match {
 			case null =>
-			case m => logV(s"Execute:: id=${m.id};   [$ids]", tag)
-				try m.execute() catch {case e: Throwable => logV(s"Exception while execute message ${m.id}: $e", tag)}
+			case m => logV(s"Execute:: id=${m.id};   [$ids]", logTag)
+				try m.execute() catch {case e: Throwable => logV(s"Exception while execute message ${m.id}: $e", logTag)}
 		}
 	}
 	protected[this] def hasNext: Boolean = synchronized {
@@ -76,8 +76,8 @@ class DefaultAsyncContext(implicit val key: AsyncContextKey) extends AsyncContex
 	protected[this] def off(delay: Long): iMessage = {
 		stopSoftly match {
 			case true => stopNow = true
-			case _ => logV(s"Wait:: $delay", tag)
-				try wait(delay) catch {case e: Throwable => logV(s"Wait error= $e", tag)}
+			case _ => logV(s"Wait:: $delay", logTag)
+				try wait(delay) catch {case e: Throwable => logV(s"Wait error= $e", logTag)}
 		}
 		null
 	}

@@ -12,7 +12,7 @@ import just4fun.core.modules.Module
 import just4fun.core.debug.DebugUtils._
 
 object TestApp {
-	val sysId = "TestSystem"
+	val contId = "TestContainer"
 	val tagCallbacks = 299332
 	val tagEvents = 299338
 	private var i: TestApp[_, _, _, _, _] = _
@@ -28,14 +28,14 @@ class TestApp[M1 <: Module1 : Manifest, M2 <: Module2 : Manifest, M3 <: Module3 
 	  .skipPath()
 	  .skipTag(tagCallbacks)
 //	  .skipTag(tagEvents)
-	  .skipTag(DefaultAsyncContext.tag)
+	  .skipTag(DefaultAsyncContext.logTag)
 	  .skipTag(Module.logTagParam)
 	  .skipTag(Module.logTagStateX)
 //	  .skipTag(Module.logTagState)
 //	  .skipTag(Module.logTagStats)
 
 	TestApp.i = this
-	implicit var system: TestSystem = newSystem
+	implicit var container: TestContainer = newContainer
 	implicit val asyncContext: DefaultAsyncContext = new DefaultAsyncContext
 	val clas1 = implicitly[Manifest[M1]].runtimeClass.asInstanceOf[Class[M1]]
 	val clas2 = implicitly[Manifest[M2]].runtimeClass.asInstanceOf[Class[M2]]
@@ -59,17 +59,16 @@ class TestApp[M1 <: Module1 : Manifest, M2 <: Module2 : Manifest, M3 <: Module3 
 	private[this] var quit = false
 	val rx = """(\d*)(\D+)(\d*)""".r
 	private[this] var parallel = false
-	private[this] var newSys = false
+	private[this] var newCont = false
 	private[this] val commands = ArrayBuffer[String]()
 	private[this] var testCount = 0
 	private[this] var failedReports: List[String] = _
-	var systemPrepareDelay = 0
+	var prepareDelay = 0
 
 
-	def newSystem = new TestSystem
+	def newContainer = new TestContainer
 	def reinit(): Unit = {
-//		system = newSystem
-		systemPrepareDelay = 0
+		prepareDelay = 0
 		cfg1 = TestConfig()
 		cfg2 = TestConfig()
 		cfg3 = TestConfig()
@@ -119,11 +118,12 @@ class TestApp[M1 <: Module1 : Manifest, M2 <: Module2 : Manifest, M3 <: Module3 
 				val (m1, cfg1, clas1) = getModule(if (n1 == 0) 1 else n1)
 				val (m2, cfg2, clas2) = getModule(n2)
 				com match {
-					case "s" ⇒ system.bindModule(clas1)
-					case "sx" ⇒ system.unbindModule(clas1)
+					case "s" ⇒ container.bindModule(clas1)
+					case "sx" ⇒ container.unbindModule(clas1)
 					case "b" ⇒ m1.bind(clas2, false)
 					case "bs" ⇒ m1.bind(clas2, true)
 					case "bx" ⇒ m1.unbind(clas2)
+					case "bxx" ⇒ m1.unbindAlll()
 					case "u" ⇒ m1.useAsync(n2)
 					case "uu" ⇒ m1.useSync(n2)
 					case "r" ⇒ m1.setRestful_(true)
@@ -138,15 +138,15 @@ class TestApp[M1 <: Module1 : Manifest, M2 <: Module2 : Manifest, M3 <: Module3 
 					case "z" ⇒ logV(draftReport())
 					case "zx" ⇒ logV(draftReport(true))
 					case "L" ⇒ DebugConfig.skipTag(tagCallbacks, n2 != 1)
-					case "x" ⇒ newSys = true
+					case "x" ⇒ newCont = true
 					case "@" ⇒ reinit()
 					case "/" ⇒ quit = true; appQuit()
-					case "//" ⇒ waitSystemFinish(n2)
+					case "//" ⇒ waitContainerFinish(n2)
 					case "///" ⇒ Thread.sleep(n2); logV(s"->> wake")
 					case "/=" ⇒ parallel = true
 					case "/=/" ⇒ parallel = false
-					case "rs" ⇒ system.restore(s2)
-					case "#pd" ⇒ systemPrepareDelay = n2
+					case "rs" ⇒ container.restore(s2)
+					case "#pd" ⇒ prepareDelay = n2
 					case "#sp" ⇒ cfg1.startParallel = n2 == 1
 					case "#sr" ⇒ cfg1.startRestful = n2 == 1
 					case "#ss" ⇒ cfg1.startSuspended = n2 == 1
@@ -194,7 +194,7 @@ class TestApp[M1 <: Module1 : Manifest, M2 <: Module2 : Manifest, M3 <: Module3 
 			testCount += 1
 			logV(s"\n\n*************                        TEST:$testCount  [${test.name}]")
 			onCommands(test.commands, test.extraCases)
-			waitSystemFinish(test.delay)
+			waitContainerFinish(test.delay)
 			test.time = System.currentTimeMillis() - sequence.head.time
 			logW(report(test.name, test.assertions))
 			HitPoints.reset()
@@ -215,15 +215,15 @@ class TestApp[M1 <: Module1 : Manifest, M2 <: Module2 : Manifest, M3 <: Module3 
 	protected[this] implicit def assert2f(asserts: ⇒ Assertion): (() ⇒ Assertion) = () ⇒ asserts
 
 	/* APP */
-	private[this] def waitSystemFinish(delay: Int = 30000): Unit = synchronized {
-		if (system.isSystemStarted) {
+	private[this] def waitContainerFinish(delay: Int = 30000): Unit = synchronized {
+		if (!container.isContainerEmpty) {
 			val t0 = System.currentTimeMillis
 			wait(delay)
-			system.forceStopSystem()
-			logV(s"->> waited system finish [${System.currentTimeMillis - t0} of $delay];")
+			container.forceEmpty()
+			logV(s"->> waited Container finish [${System.currentTimeMillis - t0} of $delay];")
 		}
 	}
-	def onSystemFinish(): Unit = {
+	def onContainerFinish(): Unit = {
 		asyncContext.execute {() ⇒
 			synchronized {
 				notifyAll()
@@ -233,17 +233,17 @@ class TestApp[M1 <: Module1 : Manifest, M2 <: Module2 : Manifest, M3 <: Module3 
 		}
 	}
 	def appQuit(): Unit = {
-		if (system.isSystemStopped) {
+		if (container.isContainerEmpty) {
 			if (quit) Async.post(500)(System.exit(4))
-			else if (newSys) {
+			else if (newCont) {
 				logV(draftReport())
-				system = newSystem
-				newSys = false
+				container = newContainer
+				newCont = false
 			}
 		}
 	}
 	protected[this] def appAwait(): Unit = {
-		system.await()
+		container.await()
 		asyncContext.await()
 	}
 }
@@ -264,10 +264,10 @@ object HitPoints extends HitPointSet {
 	val ModCreate, ModConstr, ModPrepare, ModActStart, ModActProgress, ModActCompl,
 	ModDeactStart, ModDeactProgress, ModDeactCompl, ModFailed, ModDestroy,
 	ModBindAdd, ModBindRemove, ModReqAdd, ModReqExec, ModReqComplete, ModReqRemove, ModSyncReq, ModRestored, ModRestoreAdd, ModRestoreRemove = new HitPointVal(false)
-	val SysStart, SysFinish, SysModPrepare, SysModDestroy = new HitPointVal(true)
+	val ContStart, ContFinish, ContModPrepare, ContModDestroy = new HitPointVal(true)
 	val points: mutable.Buffer[HitPointVal] = values.to[mutable.Buffer].map(p ⇒ p.asInstanceOf[HitPointVal])
-	val sysPoints: mutable.Buffer[HitPointVal] = points.filter(_.system)
-	val modPoints: mutable.Buffer[HitPointVal] = points.filter(!_.system)
+	val contPoints: mutable.Buffer[HitPointVal] = points.filter(_.isContainer)
+	val modPoints: mutable.Buffer[HitPointVal] = points.filter(!_.isContainer)
 	val sequence = mutable.ArrayBuffer[Hit]()
 	val alterSeq = mutable.ArrayBuffer[Hit]()
 	def reset(): Unit = {
@@ -379,7 +379,7 @@ case class Hit(pid: Int, mid: Int, param: Any) {
 }
 
 class HitPointSet extends Enumeration {
-	class HitPointVal(val system: Boolean) extends Val with HitPoint
+	class HitPointVal(val isContainer: Boolean) extends Val with HitPoint
 }
 
 
@@ -389,7 +389,7 @@ object HitPoint {
 
 trait HitPoint {
 	this: Enumeration#Value ⇒
-	val system: Boolean
+	val isContainer: Boolean
 	lazy val index = this.id
 	lazy val name = toString
 	def apply(mid: Int = 0, param: Any = null): HitPoint = {

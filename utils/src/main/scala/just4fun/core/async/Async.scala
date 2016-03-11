@@ -10,9 +10,9 @@ import just4fun.core.debug.DebugUtils._
 
 object Async {
 	object State extends Enumeration {val NONE, WAIT, EXEC, DONE = Value}
-
+	
 	implicit def async2future[T](async: Async[T]): Future[T] = async.future
-
+	
 	def apply[T](code: => T)(implicit c: AsyncContext): Async[T] = {
 		new Async[T].task(code).activate()
 	}
@@ -34,7 +34,7 @@ object Async {
 	def cancel(id: Any)(implicit c: AsyncContext): Unit = {
 		c.cancel(id)
 	}
-
+	
 	class DummyImplicit2
 }
 
@@ -47,7 +47,7 @@ object Async {
 sealed class AsyncBase[T] extends Runnable {
 	import Async._
 	import State._
-	var id: Any = ""
+	var id: Any = this
 	protected[this] var _state = NONE
 	// ThreadPoolContext
 	protected[this] var _context: AsyncContext = null
@@ -55,40 +55,40 @@ sealed class AsyncBase[T] extends Runnable {
 	protected[this] val promise = Promise[T]()
 	val future: Future[T] = promise.future
 	private[async] val root: AsyncBase[_] = this
-
+	
 	/* USAGE */
 	def state: State.Value = _state
 	def context: AsyncContext = _context
 	def isActivated = state > NONE
 	def isExecuting = state == EXEC
 	def isDone = state == DONE
-
+	
 	/** Override to execute containing code. Alternatively use task(...). */
 	//TODO return T
-	def execute(): Try[T] = Failure(new Exception(s"There is nothing to execute in this ${getClass.getSimpleName}"))
-
+	def execute(): Try[T] = Failure(new Exception(s"There is nothing to execute in this ${getClass.getName}"))
+	
 	def task(t: AsyncTask[T])(implicit c: AsyncContext): this.type = {
 		_context = c
 		_task = t
 		this
 	}
-	def activate(id: Any = null, delay: Long = 0, replace: Boolean = true): this.type = synchronized {
+	def activate(id: Any = null, delay: Long = 0, replace: Boolean = true): this.type = root.synchronized {
 		if (_state == NONE) {
 			_state = WAIT
-			if (_context != null) _context.execute(if (id == null) this else id, delay , this, id != null)
-			else finishExecute(Failure(new Exception("Context is null")))
+			if (_context != null) _context.execute(if (id == null) this else id, delay, this, id != null)
+			else finishExecute(Failure(new NullPointerException("Context is null")))
 		}
 		this
 	}
-	def deactivate(): this.type = synchronized {
+	def deactivate(): this.type = root.synchronized {
 		if (_state == WAIT) {
 			_state = NONE
 			if (_context != null) _context.cancel(this)
 		}
 		this
 	}
-	def cancel(err: Throwable = null): Unit = synchronized {
-		if (_state < DONE) {
+	def cancel(err: Throwable = null): Unit = root.synchronized {
+		if (_state < EXEC) {
 			if (_state == WAIT && _context != null) {
 				_context.cancel(this)
 				_task match {
@@ -99,30 +99,25 @@ sealed class AsyncBase[T] extends Runnable {
 			finishExecute(Failure(if (err == null) new CancellationException else err))
 		}
 	}
-
+	
 	protected[this] def onStartExecute(): Unit = {}
 	protected[this] def onFinishExecute(v: Try[T]): Unit = {}
-
+	
 	/* INTERNAL */
-
+	
 	override final def run(): Unit = startExecute()
-
+	
 	private[async] def startExecute(): Unit = {
-		val exec = root synchronized {
-			_state match {
-				case WAIT => _state = EXEC; true
-				case _ => false
-			}
-		}
-		if (exec) {
+		root.synchronized(if (_state == WAIT) _state = EXEC)
+		if (_state == EXEC) {
 			try onStartExecute() catch loggedE
 			if (_task != null) _task.execute(this)
 			else finishExecute(try execute() catch {case e: Throwable => Failure(e)})
 		}
 		else if (_state != DONE) finishExecute(Failure(new IllegalStateException(s"Can't execute in state ${_state}")))
 	}
-	private[async] def finishExecute(v: Try[T]): Unit = root synchronized {
-		_state = DONE
+	private[async] def finishExecute(v: Try[T]): Unit = {
+		root.synchronized(_state = DONE)
 		try onFinishExecute(v) catch loggedE
 		v match {
 			case Success(v) => promise.trySuccess(v)
@@ -141,7 +136,7 @@ sealed class AsyncBase[T] extends Runnable {
 
 class Async[T] extends AsyncBase[T] {
 	import Async._
-
+	
 	def task(code: => T)(implicit c: AsyncContext): this.type = {
 		_context = c
 		_task = new AsyncTaskSync[T](code)
@@ -195,30 +190,30 @@ class AsyncP[T, V] private[async](val parent: Async[V]) extends Async[T] {
 	import State._
 	override private[async] val root = parent.root
 	_state = parent.state
-
-	override def activate(id: Any = null, delay: Long = 0, replace: Boolean = true): this.type = root synchronized {
+	
+	override def activate(id: Any = null, delay: Long = 0, replace: Boolean = true): this.type = root.synchronized {
 		if (root.state == NONE) {
 			_state = WAIT
 			parent.activate(id, delay, replace)
 		}
 		this
 	}
-	override def deactivate(): this.type = root synchronized {
+	override def deactivate(): this.type = root.synchronized {
 		if (root.state == WAIT) {
 			_state = NONE
 			parent.deactivate()
 		}
 		this
 	}
-	override def cancel(err: Throwable = null): Unit = root synchronized {
-		if (_state < DONE) {
+	override def cancel(err: Throwable = null): Unit = root.synchronized {
+		if (_state < EXEC) {
 			parent.cancel()
 			finishExecute(Failure(if (err == null) new CancellationException else err))
 		}
 	}
-
+	
 	/* INTERNAL */
-
+	
 	private[async] def postTask(code: V => T)(implicit c: AsyncContext): this.type = {
 		_context = c
 		_task = new AsyncPostTaskSync[T, V](this, code)

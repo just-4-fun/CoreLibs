@@ -1,27 +1,32 @@
 package just4fun.test.modules.accessors.definitions.pkg0
 
+import scala.concurrent.Future
 import just4fun.core.async.{DefaultAsyncContext, AsyncContext}
-import just4fun.core.modules.{Module, ModulePreparePromise, ModuleSystem}
+import just4fun.core.modules.{ModuleRestoreAgent, Module, ModulePreparePromise, ModuleContainer}
 import just4fun.test.modules.accessors.definitions.pkg1.ModuleX1
 import just4fun.test.modules.accessors.definitions.pkg2.ModuleX2
 
-class SystemX1 extends ModuleSystem {
+class ContainerX1 extends ModuleContainer {
 	/* SYSTEM OVERRIDE */
-	override val systemId: String = "X1"
+	override val containerId: String = "X1"
 	override implicit val asyncContext: AsyncContext = new DefaultAsyncContext
+	override protected[this] val internal: InternalUtils = null
+	override protected[this] val restoreAgent: ModuleRestoreAgent = null
 	/* callbacks */
-	override protected[this] def onSystemStart(): Unit = super.onSystemStart()
-	override protected[this] def onSystemStop(): Unit = super.onSystemStop()
-	override protected[this] def onModulePrepare(promise: ModulePreparePromise): Unit = super.onModulePrepare(promise)
+	override protected[this] def onContainerPopulate(): Unit = super.onContainerPopulate()
+	override protected[this] def onContainerEmpty(): Unit = super.onContainerEmpty()
+	override protected[this] def onModulePrepare(m: Module): Future[Unit] = super.onModulePrepare(m)
 	override protected[this] def onModuleDestroy(m: Module): Unit = super.onModuleDestroy(m)
 
 	/* PROTECTED SYSTEM ACCESS */
-	this.isSystemStarted
-	this.isSystemStopping
-	this.hasModule
-	this.moduleContent
+	this.bindModule
+	this.unbindModule
+	this.containsModule
+	this.modulesCount
+	this.isContainerEmptying
+	this.isContainerEmpty
+	this.foreachModuleOfType[Module] _
 	this.internal.bind(null)
-	this.sendEventToModules(null)
 }
 
 

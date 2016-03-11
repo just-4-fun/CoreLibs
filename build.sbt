@@ -30,7 +30,6 @@ lazy val androidtest = (project in file("androidtest"))
 	  , proguardScala in Android := true
   )
 
-
 lazy val android = (project in file("android"))
   .dependsOn(utils, debugutils, modules, schemify)
   .settings(commonSettings: _*)

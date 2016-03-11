@@ -1,3 +1,4 @@
+
 package just4fun.core.modules
 
 import just4fun.core.async.Async.DummyImplicit2
@@ -39,19 +40,22 @@ trait Module extends StateProcessor with BindingProcessor with RequestProcessor 
 	import StateParams._
 	protected[this] implicit final val thisModule: this.type = this
 	val moduleId: String = getClass.getName
-	private[modules] val sys: ModuleSystem = attach()
-	implicit lazy val asyncContext: AsyncContext = sys.asyncContext
+	private[modules] val cont: ModuleContainer = ModuleContainer.register(this) match {
+		case null ⇒ throw new ModuleCreateException(getClass)
+		case c ⇒ c
+	}
+	implicit lazy val asyncContext: AsyncContext = cont.asyncContext
 	lazy val status: StateInfo = new StateInfo
 	protected[this] lazy val state: State = new State
 	protected[this] lazy val internal: InternalUtils = new InternalUtils
 
 
 	/* public */
-	def system: ModuleSystem = sys
+	def context: ModuleContainer = cont
 
 	/* internal */
-	private[modules] def onBindingAdd(moduleClas: Class[_], sync: Boolean): Unit = ()
-	private[modules] def onBindingRemove(moduleClas: Class[_]): Unit = ()
+	private[modules] def onAddBinder(module: Module, sync: Boolean): Unit = ()
+	private[modules] def onRemoveBinder(module: Module): Unit = ()
 	private[modules] def onRequestAdd(clas: Class[_]): Unit = ()
 	private[modules] def onRequestRemove(clas: Class[_]): Unit = ()
 
@@ -79,29 +83,28 @@ trait Module extends StateProcessor with BindingProcessor with RequestProcessor 
 		protected[this] def progressBackoff: Long = calcBackoff
 		protected[this] final def progressDurationMs: Long = progressDuration
 		//
-		protected[this] def onFailed(): Unit = ()
+		protected[this] def onFailed(error: Throwable, phaseFailed: ModulePhase): Unit = ()
 		//
 		protected[this] def onAbleToServeNow(yep: Boolean): Unit = {}
-		protected[this] def onModuleEvent(e: ModuleEvent[_]): Unit = ()
-		protected[this] def onGoingToBeDetached(): Unit = ()
+		protected[this] def onUnbound(): Unit = ()
 		//
 		protected[this] def onConstructed(): Unit = ()
 		protected[this] def onDestroyed(): Unit = ()
 		// BACK DOOR
-		private[modules] def callFailed(): Unit = {
-			try onFailed() catch loggedE
+		private[modules] def callFailedEnsured(phase: ModulePhase): Boolean = {
+			try onFailed(failure.get, phase) catch loggedE
+			isFailed// can be immediately recovered
 		}
-		private[modules] def callStart(): CompleteOption = {
-			if (isActivating) onActivatingStart(is(Creating), CompleteSelector) else onDeactivatingStart(is(Detached), CompleteSelector)
+		private[modules] def callStartProgress(): CompleteOption = {
+			if (isActivating) onActivatingStart(is(Creating), CompleteSelector) else onDeactivatingStart(is(Destroying), CompleteSelector)
 		}
 		private[modules] def callComplete(): Unit = {
-			if (isActivating) onActivatingComplete(is(Creating)) else onDeactivatingComplete(is(Detached))
+			if (isActivating) onActivatingComplete(is(Creating)) else onDeactivatingComplete(is(Destroying))
 		}
 		private[modules] def latency = if (isUnbound) destroyLatencyMs else restLatencyMs
 		private[modules] def backoff: Long = try progressBackoff catch loggedE(calcBackoff)
 		private[modules] def callAbleToServeNow(yep: Boolean) = tryOrDie(onAbleToServeNow(yep))
-		private[modules] def callModuleEvent(e: ModuleEvent[_]): Unit = tryOrDie(onModuleEvent(e))
-		private[modules] def callGoingToBeDetached(): Unit = tryOrDie(onGoingToBeDetached())
+		private[modules] def callUnbound(): Unit = tryOrDie(onUnbound())
 		private[modules] def callConstructed() = tryOrDie(onConstructed())
 		private[modules] def callDestroyed() = try onDestroyed() catch loggedE
 	}
@@ -113,10 +116,10 @@ trait Module extends StateProcessor with BindingProcessor with RequestProcessor 
 		final def phase: ModulePhase = getPhase
 		final def params: Int = getParams
 		final def canServeNow: Boolean = getPhase == OPERATING && not(Suspended)
-		final def canServe: Boolean = getPhase != FAILED && not(Detached)
+		final def canServe: Boolean = getPhase != FAILED && not(Destroying)
 		final def bound: Boolean = isBound
-		final def boundBy(client: Module): Boolean = isBoundTo(client)
-		final def boundBySystem: Boolean = is(BoundBySystem)
+		final def boundBy[M <: Module : Manifest]: Boolean = isBoundBy[M]
+		final def boundByContainer: Boolean = is(BoundByContainer)
 		final def hasRequests: Boolean = thisModule.hasRequests
 		final def constructed: Boolean = is(Constructed)
 		final def prepared: Boolean = is(Prepared)
@@ -124,7 +127,7 @@ trait Module extends StateProcessor with BindingProcessor with RequestProcessor 
 		final def activating: Boolean = getPhase == ACTIVATING
 		final def operating: Boolean = getPhase == OPERATING
 		final def deactivating: Boolean = getPhase == DEACTIVATING
-		final def detached: Boolean = is(Detached)
+		final def destroying: Boolean = is(Destroying)
 		final def destroyed: Boolean = getPhase == DESTROYED
 		final def failed: Boolean = getPhase == FAILED
 		final def recoverable: Boolean = not(Irrecoverable)
@@ -134,7 +137,7 @@ trait Module extends StateProcessor with BindingProcessor with RequestProcessor 
 		final def failure: Option[Throwable] = thisModule.failure
 		override def toString: String = {
 			val buff = new StringBuilder
-			buff ++= "phase: " ++= phase.toString ++= ";  bindings: " ++= clientsCount.toString ++= ";  requests: " ++= requestsNum.toString ++= ";  params: "
+			buff ++= "phase: " ++= phase.toString ++= ";  bindings: " ++= bindersCount.toString ++= ";  requests: " ++= requestsNum.toString ++= ";  params: "
 			StateParams.values.foreach { param ⇒
 				if (param.id > 0) buff ++= ", "
 				buff ++= param.toString ++= ":"
@@ -146,11 +149,11 @@ trait Module extends StateProcessor with BindingProcessor with RequestProcessor 
 
 	/* INTERNAL UTILS */
 	class InternalUtils {
-		def bind[M <: Module](clas: Class[M], sync: Boolean): M = {
-			if (not(Detached)) sys.bind(clas, thisModule, sync, false, null) else null.asInstanceOf[M]// todo throw ?
+		final def bind[M <: Module](clas: Class[M], sync: Boolean): M = {
+			if (not(Destroying)) cont.bind(clas, thisModule, sync, false, null) else null.asInstanceOf[M]// todo throw ?
 		}
-		def unbind[M <: Module](clas: Class[M]): Unit = {
-			if (not(Detached)) sys.unbind(clas, thisModule)
+		final def unbind[M <: Module](clas: Class[M]): Unit = {
+			if (not(Destroying)) cont.unbind(clas, thisModule)
 		}
 	}
 
@@ -163,78 +166,88 @@ trait Module extends StateProcessor with BindingProcessor with RequestProcessor 
 trait BindingProcessor {
 	self: Module =>
 	import StateParams._
-	private[this] val clients = mutable.Set[Module]()
-	private[modules] val syncClients = mutable.Set[Module]()
-	private[modules] val syncServers = mutable.Set[Module]()
+	private[this] val binders = mutable.Set[Module]()
+	private[modules] val syncBinders = mutable.Set[Module]()
+	private[modules] val syncBounds = mutable.Set[Module]()
 
-	private[modules] def isBound: Boolean = clients.nonEmpty
-	private[modules] def isUnbound: Boolean = clients.isEmpty
 	protected[this] final def bind[M <: Module : Manifest]: M = macro Macros.bind[M]
-	protected[this] final def bindSync[M <: Module : Manifest]: M = macro Macros.bindS[M]
+	protected[this] final def bindWithSync[M <: Module : Manifest]: M = macro Macros.bindS[M]
 	protected[this] final def unbind[M <: Module : Manifest]: Unit = {// TODO macros: explicit M
 		internal.unbind(implicitly[Manifest[M]].runtimeClass.asInstanceOf[Class[M]])
 	}
-	protected[this] final def unbind[M <: Module : Manifest](s: M): Unit = {
-		internal.unbind(s.getClass.asInstanceOf[Class[M]])
+	protected[this] final def unbind[M <: Module : Manifest](m: M): Unit = {
+		internal.unbind(m.getClass.asInstanceOf[Class[M]])
 	}
-	//
-	private[modules] def isBoundTo(client: Module): Boolean = clients.contains(client)
-	private[modules] def isBoundToSystem: Boolean = is(BoundBySystem)
-	/* internal */
-	private[modules] def clientsCount = clients.size
-	private[modules] def bindingAdd(client: Module, sync: Boolean, root: Boolean): Unit = clients.add(client) match {
-		case true ⇒ if (root) on_(BoundBySystem)
-			debug(onBindingAdd(client.getClass, sync))
-			if (not(HasBindings)) on_!!!(HasBindings)
-			if (sync) addSyncClient(client)
-			if (DebugConfig.isDebug) client.detectCyclicBinding(this, client :: Nil) match {
-				case Nil =>
-				case trace => logW(s"Cyclic module relations detected in chain [${trace.map(_.getClass.getSimpleName).mkString(", ")}]")
-			}
-		case false ⇒ if (sync) addSyncClient(client) else removeSyncClient(client)
-	}
-	private[modules] def bindingRemove(client: Module, root: Boolean): Boolean = clients.remove(client) match {
-		case true ⇒ debug(onBindingRemove(client.getClass))
-			if (root) off_(BoundBySystem)
-			removeSyncClient(client)
-			if (clients.isEmpty) off_!!!(HasBindings)
-			true
-		case _ ⇒ false
+	protected[this] final def unbindAll(): Unit = cont.unbindAll(this)
+	protected[this] def foreachBinderOfType[T <: Module : Manifest](exec: T ⇒ Unit): Unit = binders.foreach {
+		case b: T ⇒ b.tryOrDie(exec(b))
+		case _ ⇒
 	}
 
-	private[this] def addSyncClient(client: Module): Unit = if (syncClients.add(client)) {
-		client.addSyncServer(this)
-		if (isFailed) client.fail(new SyncServerException(this))
-		else clientActive(client.is(Active))
+	/* internal */
+	private[modules] def isBound: Boolean = binders.nonEmpty || is(BoundByContainer)
+	private[modules] def isUnbound: Boolean = binders.isEmpty && not(BoundByContainer)
+	private[modules] def isBoundBy[M <: Module](implicit m: Manifest[M]): Boolean = {
+		val clas = cont.moduleClass(m)
+		binders.exists(_.getClass == clas)
 	}
-	private[this] def removeSyncClient(client: Module): Boolean = syncClients.remove(client) match {
-		case true => client.removeSyncServer(this); clientActive(false); true
+	private[modules] def isBoundByContainer: Boolean = is(BoundByContainer)
+	private[modules] def bindersCount: Int = binders.size + (if (is(BoundByContainer)) 1 else 0)
+
+	private[modules] def addBinder(binder: Module, sync: Boolean): Unit = {
+		val isRoot = binder == null
+		val added = if (isRoot) on_(BoundByContainer) else binders.add(binder)
+		if (added) {
+			debug(onAddBinder(binder, sync))
+			on_!!!(HasBinders)
+			if (!isRoot) {
+				if (sync) addSyncBinder(binder)
+				if (DebugConfig.isDebug) scanCyclicBindings(this, binder)
+			}
+		}
+		else if (!isRoot) if (sync) addSyncBinder(binder) else removeSyncBinder(binder)
+	}
+	private[modules] def removeBinder(binder: Module): Unit = {
+		val isRoot = binder == null
+		val removed = if (isRoot) off_(BoundByContainer) else binders.remove(binder)
+		if (removed) {
+			debug(onRemoveBinder(binder))
+			if (!isRoot) removeSyncBinder(binder)
+			if (isUnbound) {
+				state.callUnbound()
+				off_!!!(HasBinders)
+			}
+		}
+	}
+
+	private[this] def addSyncBinder(binder: Module): Unit = if (syncBinders.add(binder)) {
+		binder.addSyncBound(this)
+		if (isFailed) binder.fail(new SyncBindingException(this))
+		else binderActive(binder.is(Active))
+	}
+	private[this] def removeSyncBinder(binder: Module): Boolean = syncBinders.remove(binder) match {
+		case true => binder.removeSyncBound(this); binderActive(false); true
 		case false => false
 	}
-	private[BindingProcessor] def addSyncServer(server: Module): Unit = {
-		if (syncServers.add(server) && !server.isOperating) serverOperating(false)
+	private[BindingProcessor] def addSyncBound(bound: Module): Unit = {
+		if (syncBounds.add(bound) && !bound.isOperating) boundOperating(false)
 	}
-	private[BindingProcessor] def removeSyncServer(server: Module): Unit = {
-		if (syncServers.remove(server)) serverOperating(true)
+	private[BindingProcessor] def removeSyncBound(bound: Module): Unit = {
+		if (syncBounds.remove(bound)) boundOperating(true)
 	}
-	private[BindingProcessor] def detectCyclicBinding(server: Module, trace: List[Module]): List[Module] = {
-		if (this != server) clients.foreach { client =>
-			val res = if (this == client) Nil else if (server == client) client :: trace else client.detectCyclicBinding(server, client :: trace)
+
+	private[this] def scanCyclicBindings(bound: Module, binder: Module): Unit = {
+		binder.detectCyclicBinding(bound, binder :: Nil) match {
+			case Nil =>
+			case trace => logE(s"Cyclic module relations detected in chain [${trace.map(_.getClass.getSimpleName).mkString(", ")}]. Consider using 'foreachBinderOfType' method for communication with binders.")
+		}
+	}
+	private[BindingProcessor] def detectCyclicBinding(bound: Module, trace: List[Module]): List[Module] = {
+		if (this != bound) binders.foreach { binder =>
+			val res = if (this == binder) Nil else if (bound == binder) binder :: trace else binder.detectCyclicBinding(bound, binder :: trace)
 			if (res.nonEmpty) return res
 		}
 		Nil
-	}
-
-	/* EVENT API */
-	protected[this] final def sendEventToClients[T <: Module : Manifest](e: ModuleEvent[T], modules: T*): Unit = {
-		(if (modules.isEmpty) clients else modules).foreach {
-			case m: T => m.callModuleEvent(e)
-			case _ =>
-		}
-	}
-	private[modules] def callModuleEvent(e: ModuleEvent[_]): Unit = {
-		// todo is it correct condition ?
-		if (status.canServe && getPhase > ModulePhase.PREPARING) state.callModuleEvent(e)
 	}
 }
 
@@ -300,8 +313,7 @@ trait RequestProcessor {
 
 	/* internal */
 	private[this] def requestAdd[T](request: ModuleRequest[T]): Async[T] = {
-		if (not(Constructed)) requests += request// later requestsRestart will be called
-		else if (!request.isDone) {
+		if (!request.isDone) {
 			debug(onRequestAdd(request.getClass))
 			request.module = this
 			if (!status.canServe) request.cancel(new ModuleServiceException)
@@ -324,11 +336,6 @@ trait RequestProcessor {
 		}
 		updateHasNoWork()
 	}
-	private[modules] def requestsRestart(): Unit = requests synchronized {
-		val rs = requests.toList
-		requests.clear()
-		rs.foreach(requestAdd(_))
-	}
 	private[modules] def pauseRequests(): Unit = requests.synchronized(requests.foreach(_.deactivate()))
 	private[modules] def resumeRequests(): Unit = requests.synchronized(requests.foreach(_.activate()))
 }
@@ -343,16 +350,15 @@ trait StateProcessor {
 	import ModulePhase._
 	import StateParams._
 	private[this] var phase: ModulePhase = CONSTRUCTING
+	private[this] var params = 1 << Creating.id | 1 << AllBoundsOperating.id
 	private[this] var error: Throwable = null
 	private[this] var completeOption: CompleteOption = _
 	private[this] var phaseStartTime = 0L
 	private[this] val updateLock = new Object
 	private[this] var updateFlag = uFlagNONE
 	private[this] var expectUpdate = false
-	//
-	private[this] var params = 1 << Creating.id | 1 << AllServersOperating.id
 
-	private[modules]final def suspend(on: Boolean): Unit = if (is(Suspended) != on) {
+	private[modules] final def suspend(on: Boolean): Unit = if (is(Suspended) != on) {
 		set(Suspended, on, true)
 		if (phase == OPERATING) on match {
 			case true => pauseRequests(); state.callAbleToServeNow(false)
@@ -360,12 +366,13 @@ trait StateProcessor {
 		}
 		updateHasWork() || updateHasNoWork()
 	}
-	private[modules] final def recover(): Boolean = phase == FAILED && not(Detached) && not(Irrecoverable) match {
-		case true ⇒ var serversOk = true
-			syncServers.foreach(s ⇒ if (s.isFailed) {s.recover(); serversOk = false})
-			if (serversOk) on_!!!(Recover)
+	private[modules] final def recover(): Boolean = {
+		if (phase == FAILED && is(Constructed) && not(Destroying) && not(Irrecoverable)) {
+			var boundsOk = true
+			syncBounds.foreach(s ⇒ if (s.isFailed) {s.recover(); boundsOk = false})
+			if (boundsOk) on_!!!(Recover)
 			true
-		case _ ⇒ false
+		} else false
 	}
 	private[modules] def setRestored(): Unit = on_(Restored)
 
@@ -380,25 +387,25 @@ trait StateProcessor {
 
 	/* internal */
 
-	private[modules] def set(param: StateParams, on: Boolean, silent: Boolean = false): Unit = setParam(param, on, silent)
-	private[modules] def on_!!!(param: StateParams): Unit = setParam(param, true, false)
-	private[modules] def on_(param: StateParams): Unit = setParam(param, true, true)
-	private[modules] def off_!!!(param: StateParams): Unit = setParam(param, false, false)
-	private[modules] def off_(param: StateParams): Unit = setParam(param, false, true)
-	private[modules] def is(param: StateParams): Boolean = updateLock synchronized {
-		(params & (1 << param.id)) != 0
-	}
-	private[modules] def not(param: StateParams): Boolean = updateLock synchronized {
-		(params & (1 << param.id)) == 0
-	}
+	private[modules] def set(param: StateParams, on: Boolean, silent: Boolean = false): Boolean = setParam(param, on, silent)
+	private[modules] def on_!!!(param: StateParams): Boolean = setParam(param, true, false)
+	private[modules] def on_(param: StateParams): Boolean = setParam(param, true, true)
+	private[modules] def off_!!!(param: StateParams): Boolean = setParam(param, false, false)
+	private[modules] def off_(param: StateParams): Boolean = setParam(param, false, true)
+	private[modules] def is(param: StateParams): Boolean = updateLock synchronized ((params & (1 << param.id)) != 0)
+	private[modules] def not(param: StateParams): Boolean = updateLock synchronized ((params & (1 << param.id)) == 0)
 
-	private[this] def setParam(param: StateParams, isOn: Boolean, silent: Boolean): Unit = {
+	private[this] def setParam(param: StateParams, isOn: Boolean, silent: Boolean): Boolean = {
 		val prev = params
 		updateLock synchronized {
 			if (isOn) params |= (1 << param.id) else params &= ~(1 << param.id)
 		}
 		logV(s"[$moduleId]:  [${(0 until StateParams.values.size).map(n ⇒ if ((params & (1 << n)) == 0) 0 else 1).mkString("")}];  $param= $isOn;  ${if (prev != params && !silent) ">>> " else if (prev != params) "V" else "-"}", logTagParam)
-		if (prev != params && !silent) updateState(param.id)
+		if (prev != params) {
+			if (!silent) updateState(param.id)
+			true
+		}
+		else false
 	}
 
 	private[modules] def updateState(cause: Int): Unit = {
@@ -414,7 +421,7 @@ trait StateProcessor {
 		}
 		// DEFs
 		def update(): Unit = {
-			if (expectUpdate) {sys.cancelUpdate(this); expectUpdate = false}
+			if (expectUpdate) {cont.cancelStateUpdate(this); expectUpdate = false}
 			val prevPhase = phase
 			phase match {
 				case CONSTRUCTING ⇒ if (is(Constructed)) constructed_>>
@@ -424,7 +431,7 @@ trait StateProcessor {
 				case OPERATING => if (deactivate_?) deactivate_>>
 				case DEACTIVATING => if (complete_?) rest_>>
 				case FAILED => if (destroy_?) destroy_>> else if (is(Recover)) recover_>>
-				case DESTROYED => sys.destroyed(this)
+				case DESTROYED => cont.destroyed(this)
 			}
 			if (prevPhase != phase) {
 				phaseStartTime = System.currentTimeMillis
@@ -469,93 +476,87 @@ trait StateProcessor {
 		}
 	}
 
-	private[this] def setState(v: ModulePhase): Unit = {
+	private[this] def setPhase(v: ModulePhase): Unit = {
 		logW(s"[$moduleId]:  $phase -->  $v", logTagState)
 		phase = v
 	}
 
 	/* transitions */
 
-	private[modules] def attach(): ModuleSystem = this match {
-		case _: SystemModule => phase = RESTING; null
-		case _ => val sys = ModuleSystem.attach(this)
-			if (sys == null) throw new ModuleCreateException(getClass)
-			sys
-	}
 	private[modules] def setConstructed(): Unit = {
-		on_(Constructed)
 		state.callConstructed()
-		if (isFailed) state.callFailed()
-		sys.constructed(this)
-		requestsRestart()
-		updateState(Constructed.id)
+		if (isFailed) state.callFailedEnsured(CONSTRUCTING)
+		on_!!!(Constructed)
 	}
 	private[this] def constructed_>> : Unit = {
-		setState(PREPARING)
-		sys.prepare(this)
+		setPhase(PREPARING)
+		cont.prepare(this)
 	}
 	private[modules] def setPrepared(): Unit = on_!!!(Prepared)
 	private[this] def prepared_>> : Unit = {
-		setState(RESTING)
+		setPhase(RESTING)
 	}
-	private[this] def activate_? : Boolean = changeActive(isUnbound || not(Restful) || hasWork || is(HasClientActive)) && canActivate
-	private[this] def canActivate: Boolean = is(AllServersOperating)
+	private[this] def activate_? : Boolean = changeActive(isUnbound || not(Restful) || hasWork || is(HasBinderActive)) && canActivate
+	private[this] def canActivate: Boolean = is(AllBoundsOperating)
 	private[this] def activate_>> : Unit = tryOrFail {
-		setState(ACTIVATING)
+		setPhase(ACTIVATING)
 		startProgress()
 	}
 	private[this] def startProgress(): Unit = {
-		completeOption = state.callStart()
-		if (completeOption == CompleteNow) on_(Complete)
+		off_(Complete)
+		completeOption = state.callStartProgress()
 	}
 	private[this] def activated_? : Boolean = canActivate && complete_?
-	private[this] def complete_? : Boolean = completeOption match {
-		case CompleteWhen(isComplete) => tryOrFail(isComplete() || {postUpdateState(state.backoff); false})
-		case _ if is(Complete) => off_(Complete); true
-		case _ => false
+	private[this] def complete_? : Boolean = {
+		if (is(Complete)) {off_(Complete); completeOption = null}
+		completeOption match {
+			case CompleteWhen(isComplete) ⇒ tryOrFail(isComplete()) match {
+				case true ⇒ completeOption = null
+				case _ ⇒ if (!isFailed) postUpdateState(state.backoff)
+			}
+			case _ ⇒
+		}
+		completeOption == null
 	}
 	private[this] def operate_>> : Unit = tryOrFail {
 		state.callComplete()
 		if (is(Creating)) off_(Creating)
-		setState(OPERATING)
-		syncClients.foreach(_.serverOperating(true))
+		setPhase(OPERATING)
+		syncBinders.foreach(_.boundOperating(true))
 		if (not(Suspended)) {
 			resumeRequests()
 			state.callAbleToServeNow(true)
 		}
 	}
-	private[this] def deactivate_? : Boolean = {
-		if (isUnbound && hasNoWork) state.callGoingToBeDetached()
-		canDeactivate match {
-			case true if is(Delayed) || is(Suspended) || state.latency == 0 => off_(Delayed); isBound || detach
-			case true => on_(Delayed); postUpdateState(state.latency); false
-			case _ => off_(Delayed); false
-		}
+	private[this] def deactivate_? : Boolean = canDeactivate match {
+		case true if is(Delayed) || is(Suspended) || state.latency == 0 => off_(Delayed); isBound || unregister
+		case true => on_(Delayed); postUpdateState(state.latency); false
+		case _ => off_(Delayed); false
 	}
-	private[this] def canDeactivate: Boolean = hasNoWork && (isUnbound || (is(Restful) && not(HasClientActive)))
-	private[this] def detach: Boolean = is(Detached) || (sys.detach(this) match {
-		case true ⇒ on_(Detached); true
+	private[this] def canDeactivate: Boolean = hasNoWork && (isUnbound || (is(Restful) && not(HasBinderActive)))
+	private[this] def unregister: Boolean = is(Destroying) || (cont.unregister(this) match {
+		case true ⇒ on_(Destroying); true
 		case _ ⇒ false
 	})
 	private[this] def deactivate_>> : Unit = tryOrFail {
-		setState(DEACTIVATING)
-		syncClients.foreach(_.serverOperating(false))
+		setPhase(DEACTIVATING)
+		syncBinders.foreach(_.boundOperating(false))
 		startProgress()
 		if (not(Suspended)) state.callAbleToServeNow(false)
-		if (is(Detached)) cancelRequests()
+		if (is(Destroying)) cancelRequests()
 	}
 	private[this] def rest_>> : Unit = tryOrFail {
-		setState(RESTING)
+		setPhase(RESTING)
 		state.callComplete()
 		changeActive(false)
 		asyncContext.stop(true)
 	}
 	private[this] def recover_>> : Unit = {
-		setState(RESTING)
+		setPhase(if (is(Prepared)) RESTING else CONSTRUCTING)
 		on_(Creating)
 		off_(Recover)
 		error = null
-		syncClients.foreach(_.recover())
+		syncBinders.foreach(_.recover())
 	}
 	private[modules] def tryOrFail[T](code: => T): T = try code catch {
 		case err: Throwable => fail(err); null.asInstanceOf[T]
@@ -564,43 +565,45 @@ trait StateProcessor {
 		case err: Throwable => fail(err, false); null.asInstanceOf[T]
 	}
 	private[modules] def fail(err: Throwable, recoverable: Boolean = true): Unit = {
-//		logE(err, s"Module [$moduleId] is ${if (recoverable) "" else "irrecoverably"} failed in [$phase] phase. ")
+		logE(err, s"Module [$moduleId] is ${if (recoverable) "" else "irrecoverably"} failed in [$phase] phase. ")
 		if (error == null && phase != DESTROYED) {
-			if (!recoverable) on_(Irrecoverable)
-			setState(FAILED)
 			error = err
-			if (is(Constructed)) {
+			val prevPhase = phase
+			setPhase(FAILED)
+			if (!recoverable) on_(Irrecoverable)
+			if (is(Constructed) && state.callFailedEnsured(prevPhase)) {
 				changeActive(false)
-				state.callFailed()
 				cancelRequests()
 				asyncContext.stop()
-				syncClients.foreach(_.fail(new SyncServerException(this)))
 				state.callAbleToServeNow(false)
+				syncBinders.foreach(_.fail(new SyncBindingException(this)))
 			}
 		}
 	}
-	private[this] def destroy_? : Boolean = is(Constructed) && (is(Detached) || ((isFailed || is(Creating)) && isUnbound && hasNoWork && detach))
+	private[this] def destroy_? : Boolean = {
+		is(Constructed) && (is(Destroying) || ((isFailed || is(Creating)) && isUnbound && hasNoWork && unregister))
+	}
 	private[this] def destroy_>> : Unit = {
-		setState(DESTROYED)
+		setPhase(DESTROYED)
 		state.callDestroyed()
 		cancelRequests()
 		asyncContext.exit()
 	}
 
-	private[modules] def serverOperating(on: Boolean): Unit = {
-		if (!on) off_(AllServersOperating) else if (syncServers.forall(_.isOperating)) on_!!!(AllServersOperating)
+	private[modules] def boundOperating(on: Boolean): Unit = {
+		if (!on) off_(AllBoundsOperating) else if (syncBounds.forall(_.isOperating)) on_!!!(AllBoundsOperating)
 	}
-	private[modules] def clientActive(isOn: Boolean): Unit = if (is(HasClientActive) != isOn) {
-		if (isOn || syncClients.forall(_.not(Active))) set(HasClientActive, isOn)
+	private[modules] def binderActive(isOn: Boolean): Unit = if (is(HasBinderActive) != isOn) {
+		if (isOn || syncBinders.forall(_.not(Active))) set(HasBinderActive, isOn)
 	}
 	private[this] def changeActive(isOn: Boolean): Boolean = is(Active) != isOn match {
-		case true => set(Active, isOn, true); syncServers.foreach(_.clientActive(isOn)); isOn
+		case true => set(Active, isOn, true); syncBounds.foreach(_.binderActive(isOn)); isOn
 		case _ => isOn
 	}
 
 	private[modules] def postUpdateState(delay: Long): Unit = {
-		if (expectUpdate) sys.cancelUpdate(this) else expectUpdate = true
-		sys.postUpdate(delay, this)
+		if (expectUpdate) cont.cancelStateUpdate(this) else expectUpdate = true
+		cont.postStateUpdate(delay, this)
 	}
 	private[modules] def progressDuration: Long = System.currentTimeMillis - phaseStartTime
 	private[modules] def calcBackoff: Long = {
@@ -637,22 +640,22 @@ trait StateProcessor {
 private[modules] object StateParams extends Enumeration {
 	type StateParams = Value
 	/** Up to 32 params */
-	val HasBindings,// (!!!) has clients bound
+	val HasBinders,// (!!!) has modules that bound this one
 	HasWork,// (!!!) (has requests and not suspended) or (suspended and currently has executing request)
 	Restful,// (!!!) mode allowing go to REST if has no work, and go to OPERATING if has
 	Suspended,// for some reason can not currently execute requests
-	HasClientActive,// (!!!) if any of sync client is active -> should activate; all sync clients rest -> can rest
-	AllServersOperating,// (!!!) if all sync servers active -> can activate
+	HasBinderActive,// (!!!) if any of sync binder is active -> should activate; all sync binders rest -> can rest
+	AllBoundsOperating,// (!!!) if all sync bounds active -> can activate
 	Active, // derivative from above params
-	Creating, // indicates first lap from CONSTRUCTING until OPERATING
-	Detached, // indicates last lap OPERATING until DESTROYED
+	Creating, // registered; indicates first lap from CONSTRUCTING until OPERATING
+	Destroying, // unregistered; indicates last lap from OPERATING until DESTROYED
 	Constructed, // instance constructed
 	Prepared, // (!!!) instance prepared
 	Complete, // (!!!) transition: ACTIVATING > OPERATING or DEACTIVATING > RESTING
 	Delayed, // final step in delayed deactivation
 	Recover, // (!!!) recovering after FAILED
 	Irrecoverable,// failed with irrecoverable error
-	BoundBySystem,// indicates bound by system
+	BoundByContainer,// indicates bound by Container
 	RepeatUpdate,// (!!!) just cause helper for update
 	PostedUpdate,// (!!!) just cause helper for update
 	Restored// module is constructed as restored after crash
@@ -671,18 +674,11 @@ trait RestorableModule extends Module
 object CompleteSelector extends CompleteSelector
 
 class CompleteSelector {
-	def now: CompleteOption = CompleteNow
+	def now: CompleteOption = null
 	def manually: CompleteOption = CompleteManually
 	def when(isComplete: => Boolean): CompleteOption = CompleteWhen(() => isComplete)
 }
 
 class CompleteOption
-object CompleteNow extends CompleteOption
 object CompleteManually extends CompleteOption
 case class CompleteWhen(isComplete: () => Boolean) extends CompleteOption
-
-
-
-
-/* MODULE EVENT */
-abstract class ModuleEvent[T <: Module]

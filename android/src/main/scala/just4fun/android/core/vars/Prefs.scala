@@ -1,5 +1,6 @@
 package just4fun.android.core.vars
 
+import scala.collection.immutable.HashMap
 import android.content.SharedPreferences
 import just4fun.android.core.app.ModuleApp
 import just4fun.core.schemify._
@@ -9,26 +10,32 @@ import just4fun.core.schemify.impls.typefactory.{JsonArrayWriter, JsonReader}
 /* PREFS */
 /** WARN: can be used not earlier than [[android.app.Application]].onCreate is called. */
 object Prefs {
-	private lazy val cache = ModuleApp().getSharedPreferences("default_cache", 0)
+	lazy val defaultCache = ModuleApp().getSharedPreferences("default_cache", 0)
 	private[core] lazy val syscache = ModuleApp().getSharedPreferences("system_cache", 0)
 
-	def apply[T](name: String, default: T = null.asInstanceOf[T])(implicit typ: PropType[T], prefs: SharedPreferences = null): T = {
-		val p = if (prefs == null) cache else prefs
+	def apply[T](name: String)(implicit typ: PropType[T], prefs: SharedPreferences = null): T = {
+		val p = if (prefs == null) defaultCache else prefs
+		typ.eval(typ.read(p, name)(PrefReader))
+	}
+	def get[T](name: String)(implicit typ: PropType[T], prefs: SharedPreferences = null): T = apply[T](name)
+	def getOrElse[T](name: String, default: ⇒ T)(implicit typ: PropType[T], prefs: SharedPreferences = null): T = {
+		val p = if (prefs == null) defaultCache else prefs
 		val res = typ.eval(typ.read(p, name)(PrefReader))
 		if (res != null) res else default
 	}
 	def update[T](name: String, value: T)(implicit typ: PropType[T], prefs: SharedPreferences = null): Unit = if (name != null) {
-		val p = if (prefs == null) cache else prefs
+		val p = if (prefs == null) defaultCache else prefs
 		val editor = p.edit()
 		typ.write(value, editor, name)(PrefWriter)
 		editor.apply()
 	}
+	def set[T](name: String, value: T)(implicit typ: PropType[T], prefs: SharedPreferences = null): Unit = update[T](name, value)
 	def contains(name: String)(implicit prefs: SharedPreferences = null): Boolean = {
-		val p = if (prefs == null) cache else prefs
+		val p = if (prefs == null) defaultCache else prefs
 		p.contains(name)
 	}
 	def remove(name: String)(implicit prefs: SharedPreferences = null): Unit = if (name != null) {
-		val p = if (prefs == null) cache else prefs
+		val p = if (prefs == null) defaultCache else prefs
 		p.edit().remove(name).apply()
 	}
 }
@@ -75,7 +82,7 @@ object PrefReader extends TypeReader[SharedPreferences, SharedPreferences, Strin
 	override def readBoolean(d: SharedPreferences, k: String): Any = d.getBoolean(k, find[Boolean](d, k))
 	override def readNull(d: SharedPreferences, k: String): Any = null
 
-	def find[T](d: SharedPreferences, k: String)(implicit typ: PropType[T]): T = {
+	private[this]  def find[T](d: SharedPreferences, k: String)(implicit typ: PropType[T]): T = {
 		if (d.contains(k)) typ.eval(d.getAll.get(k))
 		else null.asInstanceOf[T]
 	}

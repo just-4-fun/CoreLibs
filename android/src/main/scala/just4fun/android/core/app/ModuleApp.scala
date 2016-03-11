@@ -1,9 +1,11 @@
 package just4fun.android.core.app
 
 import scala.collection.mutable
+import scala.concurrent.Future
+import scala.util.{Try, Failure, Success}
 import android.app.{Activity, Application, Notification, Service}
 import android.app.Application.ActivityLifecycleCallbacks
-import android.content.Intent
+import android.content.{Context, Intent}
 import android.os.{Bundle, IBinder}
 import android.util.Log
 import just4fun.android.core.LibRoot
@@ -12,9 +14,9 @@ import just4fun.android.core.vars.Prefs
 import just4fun.core.async.{DefaultAsyncContext, AsyncContext, Async}
 import just4fun.core.debug.DebugConfig
 import just4fun.core.debug.DebugUtils._
-import just4fun.core.modules.{Module, ModuleRestoreAgent, ModuleSystem}
+import just4fun.core.modules._
 import just4fun.core.schemify.PropType
-import just4fun.core.schemify.impls.ListType
+import just4fun.core.schemify.impls.{ArrayBufferType, ListType}
 
 private[core] object ModuleApp {
 	private var i: ModuleApp = null
@@ -22,15 +24,17 @@ private[core] object ModuleApp {
 }
 
 
-trait ModuleApp extends Application with ModuleSystem with ActivityTracker with AndroidUtils with LibResources with KeepAliveManager with PermissionsSystem {
+trait ModuleApp extends Application with ModuleContainer with ActivityTracker with AndroidUtils with LibResources with KeepAliveManager {
 	ModuleApp.i = this
 	//
-	override val systemId: String = ModuleSystem.defaultIdentifier
-//	override implicit val asyncContext: AsyncContext = new HandlerContext(?)
+	override val containerId: String = ModuleContainer.defaultId
+	//	override implicit val asyncContext: AsyncContext = new HandlerContext(?)
 	protected[this] implicit lazy val cache = Prefs.syscache
-	protected[this] implicit val listType = new ListType[String]()
+	protected[app] implicit val listType = new ListType[String]()
+	//	protected[this] implicit val buffType = new ArrayBufferType[String]()
 	override protected[this] val restoreAgent = new AndroidModuleRestoreAgent
 	private[this] var firstRun = false
+	private[app] lazy val permissionMgr = new PermissionsManager
 	//
 	DebugConfig.debug(true).logDef(Log.println(_, _, _))
 
@@ -48,42 +52,76 @@ trait ModuleApp extends Application with ModuleSystem with ActivityTracker with 
 	override final def onCreate(): Unit = {
 		super.onCreate()
 		DebugConfig.debug(isDebug)
-		DebugConfig.debug(true).skipPath()// TODO remove
+		DebugConfig.debug(true).skipPath() // TODO remove
 		  .addPackageRoot(classOf[LibRoot].getPackage.getName)
 		  .addPackageRoot(getPackageName)
-		  .skipTag(DefaultAsyncContext.tag)
+		  .skipTag(DefaultAsyncContext.logTag)
+//		  .skipTag(PermissionManager.logTag)
 		  .skipTag(Module.logTagParam)
 		  .skipTag(Module.logTagStateX)
-		  .skipTag(Module.logTagState)
+		  //		  .skipTag(Module.logTagState)
 		  .skipTag(Module.logTagStat)
-		logV(s"<<<<<<<<<<<<<<<<<<<<                    APP   CREATED                    >>>>>>>>>>>>>>>>>>>>")
+		logV(s"*************  ${getClass.getSimpleName} CREATED  **************")
 		checkRequiredManifestEntries()
 		checkFirstRun()
 		onAppCreate()
 		asyncContext.execute(() ⇒ restoreAgent.start())
 	}
-	override protected[this] final def onSystemStart(): Unit = {
-		logV(s"<<<<<<<<<<<<<<<<<<<<                    APP   START                    >>>>>>>>>>>>>>>>>>>>")
+	override protected[this] final def onContainerPopulate(): Unit = {
 		if (uiContext.isEmpty) startDaemon()
-//		initPermissionSubsystem()
+		// todo activity is not yet created > excess keepAlive cycle
 		onAppStart()
 	}
-	override protected[this] final def onSystemStop(): Unit = {
+	override protected[this] final def onContainerEmpty(): Unit = {
 		onAppStop()
-//		exitPermissionSubsystem()
 		PropType.clean()
 		ThreadPoolContext.stop()
 		stopDaemon()
-		logV(s"<<<<<<<<<<<<<<<<<<<<                    APP   STOP                    >>>>>>>>>>>>>>>>>>>>")
+	}
+
+	override protected[this] def onModulePrepare(m: Module): Future[Unit] = m match {
+		case m: AndroidModule ⇒ requestPermissions(m.getPermissions: _*)
+		case _ ⇒ super.onModulePrepare(m)
 	}
 
 	//	todo override def onTrimMemory(level: Int): Unit = Modules.onTrimMemory(level)
-//	todo override def onConfigurationChanged(newConfig: Configuration): Unit = Modules.mManager.onConfigurationChanged(newConfig)
+	//	todo override def onConfigurationChanged(newConfig: Configuration): Unit = Modules.mManager.onConfigurationChanged(newConfig)
+
+	/*  permissions */
+	// todo ui events: ? let peermissions manager react faster to close overlapping activity
+	def hasPermission(p: String): Boolean = {
+		permissionMgr.hasPermission(p)
+	}
+	/** Override to define custom dialog view. */
+	def permissionsDialog(listener: PermissionDialogListener)(implicit context: Activity): PermissionDialogHelper = {
+		new DefaultPermissionDialogHelper(listener)
+	}
+	def requestPermissions(perms: Permission*): Future[Unit] = {
+		permissionMgr.requestPermissions(perms:_*)
+	}
+
 
 
 	/* misc internal api */
-	private[app] def internalBindModule[M <: Module](clas: Class[M]): M = internal.bind(clas)
-	private[app] def internalBindModule[M <: Module](clas: Class[M], constructor: () ⇒ M): M = internal.bind(clas, constructor)
+	//	private[app] def internalBindModule[M <: Module](clas: Class[M]): M = internal.bind(clas)
+	//	private[app] def internalBindModule[M <: Module](clas: Class[M], constructor: () ⇒ M): M = internal.bind(clas, constructor)
+
+	//	private[app] def onActivityConstructed[M <: ActivityModule[_]](a: ModuleActivityBase[M], clas: Class[M]): M = {
+	//		a.module.callActivityConstructed(a)
+	//		internal.bind(clas)
+	//	}
+	//	private[app] def onReceiverConstructed[M <: AndroidModule](r: ModuleReceiverBase[M], clas: Class[M]): M = {
+	//		internal.bind(clas)
+	//	}
+	//	private[app] def onServiceConstructed[M <: AndroidModule](s: ModuleServiceBase[M], clas: Class[M]): M = {
+	//		internal.bind(clas)
+	//	}
+	private[app] def onAppEnterPoint[M <: AndroidModule](p: AppEntryPoint, clas: Class[M]): M = {
+		internal.bind(clas)
+	}
+	private[app] def onAppExitPoint[M <: AndroidModule](p: AppEntryPoint, clas: Class[M]): Unit = {
+		unbindModule(clas)
+	}
 
 	private[this] def isDebug: Boolean = {
 		try {
@@ -125,8 +163,7 @@ object UiEvent extends Enumeration {
 }
 
 
-trait ActivityTracker extends ActivityLifecycleCallbacks {
-	self: ModuleApp ⇒
+trait ActivityTracker extends ActivityLifecycleCallbacks {self: ModuleApp ⇒
 	import ActivityState._
 	private[this] var activity: Activity = _
 	private[this] var state: ActivityState.Value = NONE
@@ -140,15 +177,9 @@ trait ActivityTracker extends ActivityLifecycleCallbacks {
 	def uiVisible = state == RESUMED
 	def uiAlive = state >= CREATED && state < DESTROYED && !activity.isFinishing && (!reconfiguring || state < PAUSED)
 
-	private[app] def onActivityConstructed(a: Activity): Unit = {
-//		if (activity == null) uiEvent = UiEvent.CREATE
-		activity = a
-		fireConstruct(a)
-	}
 	override private[app] def onActivityCreated(a: Activity, inState: Bundle): Unit = {
-//		if (activity == null) uiEvent = UiEvent.CREATE
+		if (activity == null) uiEvent = UiEvent.CREATE
 		activity = a
-		uiEvent = UiEvent.CREATE
 		onStateChange(a, CREATED)
 		if (!reconfiguring) {
 			fireCreate(a)
@@ -204,16 +235,10 @@ trait ActivityTracker extends ActivityLifecycleCallbacks {
 	}
 	private def reason(a: Activity): String = if (uiEvent != UiEvent.NONE) uiEvent.toString else if (a.isFinishing) "finishing" else if (reconfiguring) "reconfiguring" else "replacing"
 
-	private[this] def fireConstruct(a: Activity): Unit = {
-		a match {
-		  case a: ModuleActivityBase[_] => a.module.callActivityConstructed(a)
-		  case _ =>
-		}
-	}
 	private[this] def fireCreate(a: Activity): Unit = {
 		a match {
-		  case a: ModuleActivityBase[_] => a.module.callActivityCreated()
-		  case _ =>
+			case a: ModuleActivityBase[_] => a.module.callActivityCreated()
+			case _ =>
 		}
 	}
 	private[this] def fireRestore(a: Activity, inState: Bundle): Unit = {
@@ -255,7 +280,7 @@ case class ActivityEvent(hash: Int, state: ActivityState.Value, current: Boolean
 /* KEEP ALIVE */
 class KeepAliveService extends Service {
 	ModuleApp().onDaemonCreate(this)
-//	override def onCreate(): Unit = ModuleApp().onDaemonCreate(this)
+	//	override def onCreate(): Unit = ModuleApp().onDaemonCreate(this)
 	override def onStartCommand(intent: Intent, flags: Int, startId: Int): Int = {
 		ModuleApp().onDaemonStart(intent, flags, startId)
 	}
@@ -264,8 +289,7 @@ class KeepAliveService extends Service {
 }
 
 
-trait KeepAliveManager {
-	self: ModuleApp ⇒
+trait KeepAliveManager {self: ModuleApp ⇒
 	import Service.{START_FLAG_REDELIVERY, START_FLAG_RETRY}
 	private[this] var daemon: Service = _
 	private[this] var keepAliveForeground = false
@@ -286,34 +310,38 @@ trait KeepAliveManager {
 		if (daemon != null) daemon.stopForeground(removeNotification)
 	}
 
-	private[app] def startDaemon(info: Bundle = null): Unit = if (daemon == null && isSystemStarted) {
+	private[app] def startDaemon(info: Bundle = null): Unit = if (daemon == null && !isContainerEmpty) {
 		val intent = new Intent(this, classOf[KeepAliveService])
 		if (info != null) intent.putExtra("info", info)
 		startService(intent)
-		logV("start KEEP ALIVE")
+		logV("KEEP ALIVE start ")
 	}
-	private[app] def stopDaemon(): Unit = if (daemon != null && (!keepAliveForeground || !isSystemStarted)) {
+	private[app] def stopDaemon(): Unit = if (daemon != null && (!keepAliveForeground || isContainerEmpty)) {
 		if (keepAliveForeground) stopForeground(true)
 		daemon.stopSelf()
 		daemon = null
-		logV("stop KEEP ALIVE")
+		logV("KEEP ALIVE stop")
 	}
 
 	/* SERVICE CALLBACKS */
-	private[app]  def onDaemonCreate(s: KeepAliveService): Unit = {
+	private[app] def onDaemonCreate(s: KeepAliveService): Unit = {
 		daemon = s
-		logV("onCreate")
+		logV("KEEP ALIVE onCreate")
 	}
-	private[app]  def onDaemonDestroy(s: KeepAliveService): Unit = {
+	private[app] def onDaemonDestroy(s: KeepAliveService): Unit = {
 		// WARN !! is called when app is killed via Settings
 		daemon = null
-		logV("onDestroy")
+		logV("KEEP ALIVE onDestroy")
+
+		//todo remove
+		Async.cancel("SPAM")(ThreadPoolContext)
+
 	}
-	private[app]  def onDaemonStart(intent: Intent, flags: Int, startId: Int): Int = {
+	private[app] def onDaemonStart(intent: Intent, flags: Int, startId: Int): Int = {
 		val isRestart = flags == START_FLAG_REDELIVERY || flags == START_FLAG_RETRY
 		if (intent != null) {
 			val info = intent.getBundleExtra("info")
-			if(info != null) {
+			if (info != null) {
 				if (isRestart) keepAliveForeground = info.getBoolean("foreground")
 				if (keepAliveForeground) {
 					val id = info.getInt("id")
@@ -322,8 +350,8 @@ trait KeepAliveManager {
 				}
 			}
 		}
-		val cancel = !isSystemStarted || (uiVisible && !keepAliveForeground)
-		logV(s"onStart:   cancel? $cancel")
+		val cancel = isContainerEmpty || (uiVisible && !keepAliveForeground)
+		logV(s"KEEP ALIVE onStart:   cancel? $cancel")
 		if (cancel) stopDaemon()
 
 
@@ -331,9 +359,9 @@ trait KeepAliveManager {
 		var counter = 0
 		if (!cancel) spam()
 		def spam(): Unit = {
-			logV("KeepAlive SPAM "+ counter )
+			logV("KEEP ALIVE  SPAM " + counter)
 			counter += 1
-			Async.post(10000, "SPAM") {spam()} (ThreadPoolContext)
+			Async.post(10000, "SPAM") {spam()}(ThreadPoolContext)
 		}
 
 		// todo how tochange dynamically
@@ -344,39 +372,38 @@ trait KeepAliveManager {
 
 
 /* UTILS */
-trait AndroidUtils {
-	self: ModuleApp ⇒
+trait AndroidUtils {self: ModuleApp ⇒
 	def systemService[T](contextServiceName: String): T = {
 		getSystemService(contextServiceName).asInstanceOf[T]
 	}
-//	def hasPermission(pm: String): Boolean = {
-////		hasPermission(pm)
-//	 todo	???
-//	}
+	//	def hasPermission(pm: String): Boolean = {
+	////		hasPermission(pm)
+	//	 todo	???
+	//	}
+	def dp2pix(dp: Int)(implicit context: Context): Int = {
+		val displayMetrics = context.getResources.getDisplayMetrics
+		((dp * displayMetrics.density) + 0.5).toInt
+	}
+	def pix2dp(pix: Int)(implicit context: Context): Int = {
+		val displayMetrics = context.getResources.getDisplayMetrics
+		((pix / displayMetrics.density) + 0.5).toInt
+	}
 }
 
 
 
 /* RESOURCES */
 trait LibResources {
-
+	/** TODO Key-Value map where Value-class replaces Key-class when instantiating [[Module]]. Can be added by overriding. */
+	//	val preferedModuleClasses: mutable.HashMap[Class[_], Class[_]] = null
 }
-
-
-
-
-/* PERMISSIONS */
-trait PermissionsSystem {
-
-}
-
 
 
 
 
 
 /* RESTORE AGENT */
-class AndroidModuleRestoreAgent(implicit system: ModuleSystem, listType: ListType[String]) extends ModuleRestoreAgent {
+class AndroidModuleRestoreAgent(implicit system: ModuleContainer, listType: ListType[String]) extends ModuleRestoreAgent {
 	private[this] val KEY_RESTORE = "restorables_"
 	private[this] val restorables = mutable.Set[String]()
 

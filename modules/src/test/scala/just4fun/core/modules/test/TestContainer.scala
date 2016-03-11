@@ -2,9 +2,11 @@ package just4fun.core.modules.test
 
 import java.util.concurrent.atomic.AtomicInteger
 import scala.collection.mutable.ArrayBuffer
+import scala.concurrent.{Promise, Future}
 import scala.language.experimental.macros
 import scala.util.{Failure, Success}
 import just4fun.core.async.{AsyncContext, DefaultAsyncContext, Async}
+import just4fun.core.modules.ModulePhase.ModulePhase
 import just4fun.core.modules._
 import just4fun.core.debug.DebugUtils._
 
@@ -28,43 +30,47 @@ case class TestConfig(var startRestful: Boolean = false, var startSuspended: Boo
 }
 
 
-/* SYSTEM */
-class TestSystem extends ModuleSystem {
+/* CONTAINER */
+class TestContainer extends ModuleContainer {
 
 	import HitPoints._
 	import TestApp._
-	override val systemId: String = TestApp.sysId
+	override val containerId: String = TestApp.contId
 	override implicit val asyncContext: DefaultAsyncContext = new DefaultAsyncContext
 	override val restoreAgent: ModuleRestoreAgent = new RestoreTestAgent
 	var restoreClasses: Iterable[String] = null
 	val app = TestApp()
 	var currentModule: Module = null
+	private[this] lazy val successF = Promise[Unit]().success().future
 	asyncContext.start()
 
 	def test() = println(s" test")
 	def await() = asyncContext.await()
 
 	/* callbacks */
-	override protected[this] def onSystemStart(): Unit = {
-		SysStart.hit()(null)
-		logV(s"@ System  onSystemStart", tagCallbacks)
+	override protected[this] def onContainerPopulate(): Unit = {
+		ContStart.hit()(null)
+		logV(s"@ Container  onContainerStart", tagCallbacks)
 	}
-	override protected[this] def onSystemStop(): Unit = {
-		SysFinish.hit()(null)
-		logV(s"@ System  onSystemFinish", tagCallbacks)
-		TestApp().onSystemFinish()
+	override protected[this] def onContainerEmpty(): Unit = {
+		ContFinish.hit()(null)
+		logV(s"@ Container  onContainerFinish", tagCallbacks)
+		TestApp().onContainerFinish()
 	}
-	override protected[this] def onModulePrepare(promise: ModulePreparePromise): Unit = {
-		currentModule = promise.module
-		SysModPrepare.hit()(null)
-		promise.onComplete = () ⇒ promise.module match {case m: TestModule => m.onPrepared() case _ =>}
-		logV(s"@ System  onModulePrepare [${promise.module.getClass.getSimpleName}]", tagCallbacks)
-		if (TestApp().systemPrepareDelay == 0) promise.complete()
-		else Async.post(TestApp().systemPrepareDelay, promise.module)(promise.complete())
+	override protected[this] def onModulePrepare(m: Module): Future[Unit] = {
+		currentModule = m
+		ContModPrepare.hit()(null)
+		logV(s"@ Container  onModulePrepare [${m.moduleId}]", tagCallbacks)
+		m  match {
+			case m: TestModule =>
+				if (TestApp().prepareDelay == 0) {m.onPrepared(); successF}
+				else Async.post(TestApp().prepareDelay, m)(m.onPrepared()).future
+			case _ => successF
+		}
 	}
 	override protected[this] def onModuleDestroy(m: Module): Unit = {
-		SysModDestroy.hit()(null)
-		logV(s"@ System  onModuleDestroy [${m.getClass.getSimpleName}]", tagCallbacks)
+		ContModDestroy.hit()(null)
+		logV(s"@ Container  onModuleDestroy [${m.getClass.getSimpleName}]", tagCallbacks)
 	}
 	def restore(nums: String): Unit = {
 		restoreClasses = nums.map(n ⇒ TestApp().getModule(n.toString.toInt)._3.getName)
@@ -87,7 +93,7 @@ abstract class TestModule(val id: Int = 0) extends Module {
 	protected[this] val asyncCount = new AtomicInteger()
 	protected[this] val syncCount = new AtomicInteger()
 	override lazy val state = new TestLifeCycle
-	override implicit lazy val asyncContext: AsyncContext = if (startParallel) new TestParallelAsyncContext else sys.asyncContext
+	override implicit lazy val asyncContext: AsyncContext = if (startParallel) new TestParallelAsyncContext else cont.asyncContext
 	if (startRestful) state.setRestful(true)
 	if (startSuspended) suspend(true)
 	//
@@ -95,14 +101,15 @@ abstract class TestModule(val id: Int = 0) extends Module {
 
 
 	/* */
-	override def system: TestSystem = super.system.asInstanceOf[TestSystem]
+	override def context: TestContainer = super.context.asInstanceOf[TestContainer]
 	def setRestful_(v: Boolean) { super.state.setRestful(v) }
 	def suspendService_(v: Boolean) { super.suspend(v) }
 	def recover_(): Boolean = { super.recover() }
 	def setFailed() { state.fail(new TestingException) }
-	def stop(): Unit = system.unbindModule(getClass)
+	def stop(): Unit = context.unbindModule(getClass)
 	def bind(clas: Class[_ <: TestModule], sync: Boolean): Unit = internal.bind(clas, sync)
 	def unbind(clas: Class[_ <: TestModule]): Unit = internal.unbind(clas)
+	def unbindAlll(): Unit = unbindAll()
 	def useSync(time: Int = 0): Unit = {
 		val n = syncCount.incrementAndGet()
 		val res = serveSync {if (time != 0) Thread.sleep(time); n}
@@ -132,13 +139,13 @@ abstract class TestModule(val id: Int = 0) extends Module {
 
 
 	/* callbacks */
-	override def onBindingAdd(moduleClas: Class[_], sync: Boolean): Unit = {
-		ModBindAdd.hit(TestApp().moduleOf(moduleClas))
-		logV(s"@ [$moduleId] onBound [${moduleClas.getSimpleName}];  sync? $sync", tagCallbacks)
+	override def onAddBinder(module: Module, sync: Boolean): Unit = {
+		ModBindAdd.hit(module)
+		logV(s"@ [$moduleId] onBound [${if(module == null) "Root" else module.getClass.getSimpleName}];  sync? $sync", tagCallbacks)
 	}
-	override def onBindingRemove(moduleClas: Class[_]): Unit = {
-		ModBindRemove.hit(TestApp().moduleOf(moduleClas))
-		logV(s"@ [$moduleId] onUnbound [${moduleClas.getSimpleName}];  unbound? $isUnbound", tagCallbacks)
+	override def onRemoveBinder(module: Module): Unit = {
+		ModBindRemove.hit(module)
+		logV(s"@ [$moduleId] onUnbound [${if(module == null) "Root" else module.getClass.getSimpleName}];  unbound? $isUnbound", tagCallbacks)
 	}
 	override def onRequestAdd(clas: Class[_]): Unit = {
 		ModReqAdd.hit()
@@ -154,7 +161,7 @@ abstract class TestModule(val id: Int = 0) extends Module {
 		restLatencyMs = restLatency
 		destroyLatencyMs = destroyLatency
 		// STATE callbacks
-		override protected[this] def onFailed(): Unit = {
+		override protected[this] def onFailed(error: Throwable, phaseFailed: ModulePhase): Unit = {
 			ModFailed.hit()
 			logV(s"@ [$moduleId] onFailed", tagCallbacks)
 		}
@@ -166,7 +173,7 @@ abstract class TestModule(val id: Int = 0) extends Module {
 				if (config.activOpt == 1) completeActivating()
 			}
 			config.activOpt match {
-				case 0 ⇒ CompleteNow
+				case 0 ⇒ null
 				case 1 ⇒ CompleteManually
 				case 2 ⇒ CompleteSelector.when {
 					ModActProgress.hit(activatingDone)
@@ -189,7 +196,7 @@ abstract class TestModule(val id: Int = 0) extends Module {
 				if (config.deactOpt == 1) completeDeactivating()
 			}
 			config.deactOpt match {
-				case 0 ⇒ CompleteNow
+				case 0 ⇒ null
 				case 1 ⇒ CompleteManually
 				case 2 ⇒ CompleteSelector.when {
 					ModDeactProgress.hit(deactivatingDone)
@@ -212,12 +219,9 @@ abstract class TestModule(val id: Int = 0) extends Module {
 			if (isActivating) (delay * 2).toLong else (delay * 2).toLong
 		}
 		override protected[this] def onAbleToServeNow(yep: Boolean): Unit = {
-			sendEventToClients(if (yep) new AbleToServeEvent else new UnableToServeEvent)
-		}
-		override protected[this] def onModuleEvent(e: ModuleEvent[_]): Unit = e match {
-			case e: AbleToServeEvent ⇒ logV(s"[$moduleId]:  ${e.server.moduleId} is ABLE to serve", tagEvents)
-			case e: UnableToServeEvent ⇒ logV(s"[$moduleId]:  ${e.server.moduleId} is UNABLE serve", tagEvents)
-			case _ ⇒
+			foreachBinderOfType[TestModule](b⇒
+				logV(s"[${b.moduleId}]:  $moduleId is ${if (yep) "ABLE" else "UNABLE"} to serve", tagEvents)
+			)
 		}
 		override protected[this] def onConstructed(): Unit = {
 			ModConstr.hit()
@@ -234,13 +238,13 @@ abstract class TestModule(val id: Int = 0) extends Module {
 
 
 /* RESTORE */
-class RestoreTestAgent(implicit system: TestSystem) extends ModuleRestoreAgent {
+class RestoreTestAgent(implicit container: TestContainer) extends ModuleRestoreAgent {
 	import HitPoints._
 	override lazy val autoStart = false
 	var list: ArrayBuffer[String] = _
 
 	override def getList: Iterable[String] = {
-		if (list == null) list = ArrayBuffer[String]() ++= system.restoreClasses
+		if (list == null) list = ArrayBuffer[String]() ++= container.restoreClasses
 		list.toList
 	}
 	override def clearList(): Unit = list.clear()
@@ -269,8 +273,3 @@ class Module5 extends TestModule(5)
 
 
 class TestingException extends Exception
-
-
-abstract class TestEvent extends ModuleEvent[TestModule]
-class AbleToServeEvent(implicit val server: TestModule) extends TestEvent
-class UnableToServeEvent(implicit val server: TestModule) extends TestEvent

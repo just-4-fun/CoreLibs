@@ -12,18 +12,18 @@ import just4fun.core.debug.DebugUtils._
 object Test extends TestApp[M1, M2, M3, M4, M5] {
 	import HitPoints._
 
-	val auto = false
+		val auto = false
 //	val auto = true
 
 	if (auto) {
-		autoTest(t27, t26)
-//		autoTest(t1, t2, t3, t4, t5, t6, t7, t8, t9, t10, t11, t12, t13, t14, t15, t16, t17, t18, t19, t20, t21, t22, t23, t24, t25, t26, t27, t28, t29, t30, t31, t32, t33, t34, t35, t36, t37, t38, t39, t40, t41, t42, t43, t44, t45, t46, t47)
+		autoTest(t17)
+//		autoTest(t1, t2, t3, t4, t5, t6, t7, t8, t9, t10, t11, t12, t13, t14, t15, t16, t17, t18, t19, t20, t21, t22, t23, t24, t25, t26, t27, t28, t29, t30, t31, t32, t33, t34, t35, t36, t37, t38, t39, t40, t41, t42, t43, t44, t45, t46, t47, t48)
 		// 185 sec
 	}
 	else manualTest {
 //		cfg1.setInject(ModCreate, true, p ⇒ m1.internal.internalBind(classOf[M2], true))
 	} {
-		case (s1, "ns", s2) ⇒ val s = new TestSystem; s.bindModule(classOf[M1], () ⇒ new M1); s.unbindModule(classOf[M1])
+		case (s1, "ns", s2) ⇒ val s = new TestContainer; s.bindModule(classOf[M1], () ⇒ new M1); s.unbindModule(classOf[M1])
 		case (s1, "ne", s2) ⇒ val m = try new M1 catch loggedE
 		case (s1, com, s2) ⇒ println(s"Command not found: '${s1 + com + s2}'")
 	}
@@ -31,6 +31,15 @@ object Test extends TestApp[M1, M2, M3, M4, M5] {
 	def injectFail(param: Any): Unit = throw new Exception("OOPS...")
 
 	/*TESTS*/
+	lazy val t48 = new AutoTest("Unbind all", "1s 1b2 2b3 3b4 4b1 3b1 2b1 1u 1bxx 1sx") {
+		override def assertions: Seq[Assertion] = Seq(
+			ModActCompl(1, true) >>>> ModDeactCompl(1, true) >? "1",
+			ModActCompl(2, true) >>>> ModDeactCompl(2, true) >? "2",
+			ModActCompl(3, true) >>>> ModDeactCompl(3, true) >? "3",
+			ModActCompl(4, true) >>>> ModDeactCompl(4, true) >? "4",
+			ModReqComplete(1, true) >>>> ContFinish() >? "5"
+		)
+	}
 	lazy val t47 = new AutoTest("Restore middle - Restored all", "3f3 1s 1bs2 2bs3 ///1000 3fx3 2fx ///2000 1sx") {
 		override def assertions: Seq[Assertion] = Seq(
 			ModFailed(3) >> ModFailed(2) >> ModFailed(1) >>>> ModActCompl(3, true) >>>> ModActCompl(2, true) >>>> ModActCompl(1, true) >?
@@ -51,7 +60,7 @@ object Test extends TestApp[M1, M2, M3, M4, M5] {
 			ModFailed(1) >> ModFailed(2) >?
 		)
 	}
-	lazy val t43 = new AutoTest("The whole tree is bound by system", "1s 1bs2 1bs3 2bs4 3bs5 4bs5 1sx") {
+	lazy val t43 = new AutoTest("The whole tree is bound by Container", "1s 1bs2 1bs3 2bs4 3bs5 4bs5 1sx") {
 		override def assertions: Seq[Assertion] = Seq(
 			ModActCompl(5, true) >? "1", ModActCompl(4, true) >? "2", ModActCompl(2, true) >? "3", ModActCompl(3, true) >? "4", ModActCompl(1, true) >? "6",
 			ModDestroy(1) >>>> ModDestroy(2) >>>> ModDestroy(3) >>>> ModDestroy(4) >>>> ModDestroy(5) >? "6"
@@ -121,7 +130,7 @@ object Test extends TestApp[M1, M2, M3, M4, M5] {
 			ModFailed(2) >>>> ModFailed(1) >? "1", ModActCompl(1, true) >!? "2", ModActCompl(2, true) >!? "3"
 		)
 	}
-	lazy val t31 = new AutoTest("Fail SyncServer - Recover SyncServer", "2f3 1s 1bs2 ///1000 2fx3 2fx 1u 1sx") {
+	lazy val t31 = new AutoTest("Fail SyncServer in Activation - Recover SyncServer", "2f3 1s 1bs2 ///1000 2fx3 2fx 1u 1sx") {
 		override def assertions: Seq[Assertion] = Seq(
 			ModFailed(2) >> ModFailed(1) >>>> ModReqAdd(1) >>>> ModActCompl(2, true) >>>> ModActCompl(1, true) >> ModReqExec(1, 1) >>>> ModDestroy(1) >> ModBindRemove(2) >>>> ModDeactStart(2, true) >?
 		)
@@ -143,14 +152,14 @@ object Test extends TestApp[M1, M2, M3, M4, M5] {
 	}
 	lazy val t27 = new AutoTest("Zero delays, Start - Use - Stop", "#pd0 #ad0 #dd0 #rl0 #dl #ao0 #do0 1s 1u 1sx") {
 		override def assertions: Seq[Assertion] = Seq(
-			SysStart()>>ModCreate(1)>>ModConstr(1)>>ModBindAdd(1)>>SysModPrepare()>>ModPrepare(1)>>ModActStart(1,true) >> ModActCompl(1,true)>>>>ModReqExec(1,1)>>>>ModDeactStart(1,true) >> ModDeactCompl(1,true)>>ModDestroy(1)>>SysModDestroy()>>SysFinish()>?"1",
-			ModReqComplete(1,true)>?"2",
+			ContStart() >> ModCreate(1) >> ModBindAdd(1) >> ModConstr(1) >> ContModPrepare() >> ModPrepare(1) >> ModActStart(1, true) >> ModActCompl(1, true) >>>> ModReqExec(1, 1) >>>> ModDeactStart(1, true) >> ModDeactCompl(1, true) >> ModDestroy(1) >> ContModDestroy() >> ContFinish() >? "1",
+			ModReqComplete(1, true) >? "2",
 			Assertion(time < 200, "Test time < 200 ms", s"time= $time")
 		)
 	}
 	lazy val t26 = new AutoTest("Zero delays, Start - Stop", "#pd0 #ad0 #dd0 #rl0 #dl #ao0 #do0 1s 1sx") {
 		override def assertions: Seq[Assertion] = Seq(
-			SysStart() >> ModCreate(1) >> ModConstr(1) >> ModBindAdd(1) >> SysModPrepare() >> ModPrepare(1) >> ModActStart(1, true) >> ModActCompl(1, true) >> ModBindRemove(1) >> ModDeactStart(1, true) >> ModDeactCompl(1, true) >> ModDestroy(1) >> SysModDestroy() >> SysFinish() >?,
+			ContStart() >> ModCreate(1) >> ModBindAdd(1) >> ModConstr(1) >> ContModPrepare() >> ModPrepare(1) >> ModActStart(1, true) >> ModActCompl(1, true) >> ModBindRemove(1) >> ModDeactStart(1, true) >> ModDeactCompl(1, true) >> ModDestroy(1) >> ContModDestroy() >> ContFinish() >?,
 			Assertion(time < 200, "Test time < 200 ms", s"time= $time")
 		)
 	}
@@ -166,17 +175,20 @@ object Test extends TestApp[M1, M2, M3, M4, M5] {
 	}
 	lazy val t23 = new AutoTest("Fail in ModDeactCompl - Recover - Use", "1#sr1 1f8 1s 1u ///4000 1fx8 1fx 1u 1sx") {
 		override def assertions: Seq[Assertion] = Seq(
-			ModDeactCompl(1, false) >>>> ModFailed(1) >> ModReqAdd(1) >>>> ModReqComplete(1, true) >?
+			ModDeactCompl(1, false) >>>> ModFailed(1) >> ModReqAdd(1) >>ModActStart(1, true) >>>> ModActCompl(1,true)>?"1",
+			ModReqComplete(1,true)>>>>ModReqComplete(1,true) >?"2"
 		)
 	}
 	lazy val t22 = new AutoTest("Fail in ModDeactProgress - Recover - Use", "1#sr1 1f7 1s 1u ///3000 1fx7 1fx 1u 1sx") {
 		override def assertions: Seq[Assertion] = Seq(
-			ModDeactProgress(1, false) >>>> ModFailed(1) >>>> ModReqAdd(1) >> ModActStart(1, true) >>>> ModDeactStart(1, true) >?
+			ModDeactProgress(1, false) >>>> ModFailed(1) >>>> ModReqAdd(1) >> ModActStart(1, true) >>>> ModActCompl(1, true) >?"1",
+			ModReqComplete(1,true)>>>>ModReqComplete(1,true) >?"2"
 		)
 	}
 	lazy val t21 = new AutoTest("Fail in ModDeactStart - Recover - Use", "1#sr1 1f6 1s 1u ///3000 1fx6 1fx 1u 1sx") {
 		override def assertions: Seq[Assertion] = Seq(
-			ModDeactStart(1, false) >>>> ModFailed(1) >>>> ModReqAdd(1) >> ModActStart(1, true) >>>> ModActCompl(1, true) >>>> ModReqComplete(1, true) >?
+			ModDeactStart(1, false) >>>> ModFailed(1) >>>> ModReqAdd(1) >> ModActStart(1, true) >>>> ModActCompl(1, true)>?"1",
+			ModReqComplete(1,true)>>>>ModReqComplete(1,true) >?"2"
 		)
 	}
 	lazy val t20 = new AutoTest("Fail in ModActCompl - Recover - Use", "1f5 1s ///1500 1fx5 1fx 1u 1sx") {
@@ -194,19 +206,20 @@ object Test extends TestApp[M1, M2, M3, M4, M5] {
 			ModActStart(1, true) >>>> ModFailed(1) >> ModActStart(1, true) >>>> ModReqAdd(1) >>>> ModActCompl(1, true) >>>> ModReqComplete(1, true) >?
 		)
 	}
-	lazy val t17 = new AutoTest("Fail in ModPrepare - Recover", "1f2 1s 1fx 1sx") {
+	lazy val t17 = new AutoTest("Fail in ModPrepare - Recover", "1f2 1s 1fx2 1fx 1u 1sx") {
 		override def assertions: Seq[Assertion] = Seq(
-			SysStart() >> ModCreate(1) >> ModConstr(1) >> ModBindAdd(1) >> SysModPrepare() >> ModPrepare(1) >> ModFailed(1) >> ModBindRemove(1) >> ModDestroy(1) >> SysModDestroy() >> SysFinish() >?
+			ModConstr(1)>>ContModPrepare()>>ModPrepare(1)>>ModFailed(1) >>>> ModActCompl(1,true)>>>> ModDeactCompl(1,true)>>ModDestroy(1) >?"1",
+			ModReqComplete(1, true) >?"2"
 		)
 	}
 	lazy val t16 = new AutoTest("Fail in ModConstr - Recover", "1f1 1s 1fx 1sx") {
 		override def assertions: Seq[Assertion] = Seq(
-			ModCreate(1) >> ModConstr(1) >> ModFailed(1) >>>> ModDestroy(1) >?
+			ContStart()>>ModCreate(1)>>ModBindAdd(1)>>ModConstr(1)>>ModFailed(1)>>ModBindRemove(1)>>ModDestroy(1) >> ContModDestroy()>>ContFinish()>?
 		)
 	}
 	lazy val t15 = new AutoTest("Fail in ModCreate - Recover", "1f0 1s 1fx 1sx") {
 		override def assertions: Seq[Assertion] = Seq(
-			ModCreate(1) >> ModConstr(1) >> ModFailed(1) >>>> ModDestroy(1) >?
+			ContStart()>>ModCreate(1)>>ModBindAdd(1)>>ModConstr(1)>>ModFailed(1)>>ModBindRemove(1)>>ModDestroy(1) >> ContModDestroy()>>ContFinish()>?
 		)
 	}
 	lazy val t14 = new AutoTest("No delays - Start Restful - Use - Suspend -Use - Release - Stop", "1#dd0 1#ad0 1#rl0 1#dl0 1#sr1 1s 1u 1p 1u 1px 1sx") {
@@ -239,7 +252,7 @@ object Test extends TestApp[M1, M2, M3, M4, M5] {
 	}
 	lazy val t9 = new AutoTest("Start Suspended - Use - Stop", "1#ss1 1s 1u 1sx") {
 		override def assertions: Seq[Assertion] = Seq(
-			ModActCompl(1, true) >> ModDeactStart(1, true) >>>> ModDeactCompl(1, true) >>>> SysFinish() >? "1",
+			ModActCompl(1, true) >> ModDeactStart(1, true) >>>> ModDeactCompl(1, true) >>>> ContFinish() >? "1",
 			ModReqComplete(1, false) >? "2"
 		)
 	}
@@ -250,7 +263,7 @@ object Test extends TestApp[M1, M2, M3, M4, M5] {
 	}
 	lazy val t7 = new AutoTest("Start Restful - Stop", "1#sr1 1s ///100 1sx") {
 		override def assertions: Seq[Assertion] = Seq(
-			ModConstr(1) >> ModBindAdd(1) >> SysModPrepare() >> ModPrepare(1) >> ModBindRemove(1) >> ModDestroy(1) >?
+			ModBindAdd(1) >> ModConstr(1) >> ContModPrepare() >> ModPrepare(1) >> ModBindRemove(1) >> ModDestroy(1) >?
 		)
 	}
 	lazy val t6 = new AutoTest("Progress CompleteWhen", "1#ao2 1#do2 1s ///100 1sx") {
@@ -275,12 +288,12 @@ object Test extends TestApp[M1, M2, M3, M4, M5] {
 	}
 	lazy val t2 = new AutoTest("Start - Prepare - Stop", "#pd100 1s 1sx") {
 		override def assertions: Seq[Assertion] = Seq(
-			SysStart() >> ModCreate(1) >> ModConstr(1) >> ModBindAdd(1) >> SysModPrepare() >> ModBindRemove(1) >> ModDestroy(1) >> SysModDestroy() >> SysFinish() >?
+			ContStart() >> ModCreate(1) >> ModBindAdd(1) >> ModConstr(1) >> ContModPrepare() >> ModBindRemove(1) >> ModDestroy(1) >> ContModDestroy() >> ContFinish() >?
 		)
 	}
 	lazy val t1 = new AutoTest("Start - Stop", "1s 1sx") {
 		override def assertions: Seq[Assertion] = Seq(
-			SysStart() >> ModCreate(1) >> ModConstr(1) >> ModBindAdd(1) >> SysModPrepare() >> ModPrepare(1) >> ModActStart(1, true) >@ 1000 >>>> ModActProgress(1, true) >> ModActCompl(1, true) >@ 1000 >> ModDeactStart(1, true) >@ 1000 >>>> ModDeactProgress(1, true) >> ModDeactCompl(1, true) >> ModDestroy(1) >> SysModDestroy() >> SysFinish() >? "1",
+			ContStart() >> ModCreate(1) >> ModBindAdd(1) >> ModConstr(1) >> ContModPrepare() >> ModPrepare(1) >> ModActStart(1, true) >@ 1000 >>>> ModActProgress(1, true) >> ModActCompl(1, true) >@ 1000 >> ModDeactStart(1, true) >@ 1000 >>>> ModDeactProgress(1, true) >> ModDeactCompl(1, true) >> ModDestroy(1) >> ContModDestroy() >> ContFinish() >? "1",
 			ModBindAdd(1) >>>> ModBindRemove(1) >>>> ModDeactStart(1, true) >? "2"
 		)
 	}

@@ -7,7 +7,8 @@ import just4fun.test.modules.accessors.definitions.pkg1.ModuleX1
 class ModuleX2 extends ModuleX {
 	/* PROTECTED MODULE ACCESS */
 	val mod = new ModuleX1
-	mod.system
+	mod.moduleId
 	mod.asyncContext
 	mod.status
+	mod.context
 }

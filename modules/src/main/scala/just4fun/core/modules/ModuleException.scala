@@ -5,7 +5,7 @@ abstract class ModuleException extends Exception
 
 
 class ModuleServiceException(msg: String = null)(implicit  module: Module) extends ModuleException {
-	override def getMessage: String = s"Module is not able to serve ${if (msg != null) msg else if (module.status.suspended) ": it is suspended" else if (module.status.detached) ": it is detached" else  s"in ${module.getPhase} state"}."
+	override def getMessage: String = s"Module is not able to serve ${if (msg != null) msg else if (module.status.suspended) ": it is suspended" else if (module.status.destroying) ": it is detached" else  s"in ${module.getPhase} state"}."
 }
 
 
@@ -19,7 +19,7 @@ class ModuleBindException(val parentClas: Class[_], reason: String = null) exten
 }
 
 
-class SyncServerException(server: Module) extends ModuleException {
+class SyncBindingException(bound: Module) extends ModuleException {
 	// TODO more readable name
-	override def getMessage: String = s"Module is failed because of synchronous server ${server.getClass.getName} failed with  ${server.failure.foreach(_.getMessage)}"
+	override def getMessage: String = s"Module is failed because of synchronously bound module ${bound.getClass.getName} failed with  ${bound.failure.foreach(_.getMessage)}"
 }

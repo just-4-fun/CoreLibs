@@ -8,5 +8,6 @@ class MainActivity extends Activity {
 	override def onCreate(savedInstanceState: Bundle) {
 		super.onCreate(savedInstanceState)
 		setContentView(R.layout.main)
+		setTitle("Basic Activity")
 	}
 }

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Hi :)</string>
+    <string name="permDialogTitle">Необходимы разрешения</string>
+    <string name="permDialogMessage">Для нормальной работы приложения необходимы следующие разрешения:</string>
+    <string name="permDialogDontAsk">Больше не спрашивать</string>
+    <string name="pm_write_contacts">Хочу все знать</string>
+</resources>

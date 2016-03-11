@@ -1,15 +1,13 @@
 package just4fun.android.demo.test1
 
-import scala.collection.mutable
-import android.annotation.TargetApi
-import android.app.ActivityManager
-import android.os.{Build, Debug, Bundle}
-import just4fun.android.core.app.{ActivityTracker, ActivityModule, ModuleActivity}
+import scala.util.{Failure, Success}
+import android.os.Bundle
+import just4fun.android.core.app._
 import just4fun.android.core.debug.measureMemory
 import just4fun.android.demo.R
 import just4fun.core.debug.measureTime
 import just4fun.core.debug.DebugUtils._
-import just4fun.core.modules.{ModuleSystem, Module}
+import just4fun.core.modules.Module
 
 class MainActivity extends ModuleActivity[MainModule] {
 	override def onCreate(savedInstanceState: Bundle) {
@@ -22,17 +20,17 @@ class MainActivity extends ModuleActivity[MainModule] {
 
 class MainModule extends ActivityModule[MainActivity] {
 	override protected[this] def onActivityCreated(): Unit = {
-//			testPerformance()
-		testMemory()
+		//			testPerformance()
+		//		testMemory()
 	}
 
 	def testMemory(): Unit = {
 		logV(s"RUN TEST MEMORY.........................................................................................................................")
 		measureMemory(activityOp.get) {
 			logV(s"TEST MEMORY.........................................................................................................................")
-//			val arr = List[String]().padTo(400000, "0123456789")// 1.5 byte per char
-			val list = for (n <- 1 to 1000) yield system.bindModule(() ⇒ new TestExtModule{}) // uncomment fail
-//			val list =  for (n <- 0 to 10) yield new AnyRef{}
+			//			val arr = List[String]().padTo(400000, "0123456789")// 1.5 byte per char
+			val list = for (n <- 1 to 1) yield context.bindModule(() ⇒ new TestExtModule {}) // uncomment fail
+			//			val list =  for (n <- 0 to 10) yield new AnyRef{}
 		}
 	}
 	def testPerformance(): Unit = {
@@ -55,3 +53,4 @@ object TestExtModule {
 trait TestExtModule extends Module {
 	override val moduleId: String = TestExtModule.nextId
 }
+
